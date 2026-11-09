@@ -110,7 +110,11 @@ func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
 	}
 	dev := device.NewDevice(tun, conn.NewDefaultBind(),
 		device.NewLogger(device.LogLevelError, "aowis-e2e-server: "))
-	t.Cleanup(func() { dev.Close() })
+	t.Cleanup(func() {
+		start := time.Now()
+		dev.Close()
+		t.Logf("phase server WireGuard device shutdown: %s", time.Since(start).Round(time.Millisecond))
+	})
 	config := fmt.Sprintf(
 		"private_key=%s\nlisten_port=0\npublic_key=%s\nallowed_ip=%s/32\n",
 		hex.EncodeToString(mustDecodeTestKey(t, serverKeys.private)),
@@ -141,7 +145,11 @@ func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
 		_, _ = io.WriteString(writer, "aowis-wireguard-e2e:"+marker)
 	})
 	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 2 * time.Second}
-	t.Cleanup(func() { _ = httpServer.Close() })
+	t.Cleanup(func() {
+		start := time.Now()
+		_ = httpServer.Close()
+		t.Logf("phase server HTTP shutdown: %s", time.Since(start).Round(time.Millisecond))
+	})
 	server.httpServer = httpServer
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -221,6 +229,7 @@ func directNetstackProbe(session *tunnelSession) string {
 
 func requestThroughTunnel(t *testing.T, server *testWireGuardServer, session *tunnelSession, port uint16, user, pass, marker string) {
 	t.Helper()
+	started := time.Now()
 	// The WireGuard handshake retry interval is ~5 seconds. A 5-second HTTP
 	// timeout can prematurely kill the first (cold-start) handshake attempt.
 	client := newSOCKSHTTPClient(port, user, pass, 12*time.Second)
@@ -229,7 +238,7 @@ func requestThroughTunnel(t *testing.T, server *testWireGuardServer, session *tu
 	var stages []string
 	appendStage := func(stage string) {
 		mu.Lock()
-		stages = append(stages, stage)
+		stages = append(stages, fmt.Sprintf("+%s %s", time.Since(started).Round(time.Millisecond), stage))
 		mu.Unlock()
 	}
 	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
@@ -242,7 +251,11 @@ func requestThroughTunnel(t *testing.T, server *testWireGuardServer, session *tu
 	if err != nil {
 		t.Fatal(err)
 	}
+	appendStage("HTTP request dispatched")
 	response, err := client.Do(request)
+	if err == nil {
+		appendStage(fmt.Sprintf("HTTP status %d received", response.StatusCode))
+	}
 	if err != nil {
 		mu.Lock()
 		stagesText := strings.Join(stages, " -> ")
@@ -266,29 +279,58 @@ func requestThroughTunnel(t *testing.T, server *testWireGuardServer, session *tu
 	if response.StatusCode != http.StatusOK || string(data) != "aowis-wireguard-e2e:"+marker {
 		t.Fatalf("wrong tunnel response: status=%d body=%q", response.StatusCode, data)
 	}
+	appendStage("HTTP body validated")
+	mu.Lock()
+	stagesText := strings.Join(stages, " -> ")
+	mu.Unlock()
+	t.Logf("phase encrypted HTTP: %s; trace: %s", time.Since(started).Round(time.Millisecond), stagesText)
+}
+
+func logE2EPhase(t *testing.T, name string, started time.Time) {
+	t.Helper()
+	t.Logf("phase %s: %s", name, time.Since(started).Round(time.Millisecond))
 }
 
 func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
+	testStarted := time.Now()
+	phaseStarted := time.Now()
 	server := newTestWireGuardServer(t, "first")
+	logE2EPhase(t, "server setup", phaseStarted)
+
+	phaseStarted = time.Now()
 	session, port, user, pass := server.startClient(t, server.keys.public)
+	logE2EPhase(t, "initial client startup", phaseStarted)
 	defer func() {
 		if session != nil {
+			started := time.Now()
 			session.close()
+			logE2EPhase(t, "fallback initial client shutdown", started)
 		}
 	}()
+
 	requestThroughTunnel(t, server, session, port, user, pass, "first")
 	if !hasHandshake(t, server.device) || !hasHandshake(t, session.device) {
 		t.Fatal("HTTP succeeded but WireGuard handshake was not recorded on both peers")
 	}
+	phaseStarted = time.Now()
 	session.close()
+	logE2EPhase(t, "initial client shutdown", phaseStarted)
 	session = nil
 	if conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))), 150*time.Millisecond); err == nil {
 		conn.Close()
 		t.Fatal("proxy listener remains open after session shutdown")
 	}
+
+	phaseStarted = time.Now()
 	restarted, newPort, newUser, newPass := server.startClient(t, server.keys.public)
-	defer restarted.close()
+	logE2EPhase(t, "restarted client startup", phaseStarted)
+	defer func() {
+		started := time.Now()
+		restarted.close()
+		logE2EPhase(t, "restarted client shutdown", started)
+	}()
 	requestThroughTunnel(t, server, restarted, newPort, newUser, newPass, "first")
+	logE2EPhase(t, "test body excluding deferred shutdown", testStarted)
 }
 
 func TestWireGuardE2EWrongPeerKeyFailsClosed(t *testing.T) {

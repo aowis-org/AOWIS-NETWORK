@@ -12,15 +12,20 @@
   through the SOCKS5 adapter, WireGuard handshake assertions, wrong peer key,
   proxy shutdown/restart, independent tunnel credentials and no OS-host TCP bypass.
   All 40 scenarios passed in 10 consecutive Linux runs after the diagnostic
-  timeout adjustment. An approximately five-second cost remains in the HTTP/restart
-  scenario; phase timings distinguish handshake/HTTP delays from shutdown delays.
+  timeout adjustment. Phase timings localized occasional ~5.2-second reconnects
+  to SOCKS5 CONNECT *after* rapid same-key peer restart (not first HTTP or
+  shutdown). wireguard-go enforces a 20 ms per-peer handshake-initiation rate
+  limit, consistent with the observed first-initiation drop and ~5-second
+  retransmission. The normal restart test now stays outside that window; an
+  additional immediate-restart test covers the expected retry behavior.
+  This cause remains a strong hypothesis pending rerun of both scenarios.
 - Existing repository patch/snapshot mechanics, plus Linux build scripts
 
 ## Next work (ordered)
 
-1. **Finish end-to-end qualification:** measure the repeatable five-second
-   encrypted HTTP/restart test with phase-level timing (including server and
-   client shutdown), address any confirmed latency defect, then extend with
+1. **Finish end-to-end qualification:** verify normal and immediate-restart
+   behavior in repeated local runs, and confirm the 20 ms handshake-rate-limit
+   hypothesis without changing upstream WireGuard timers. Then extend with
    dropped UDP packets, DNS routing, repeated
    teardown, and a C++-to-Go ABI smoke test. The new tests do not require root,
    Docker, a kernel VPN interface, or an external peer.

@@ -321,6 +321,15 @@ func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 		t.Fatal("proxy listener remains open after session shutdown")
 	}
 
+	// The same server peer accepts handshake initiations no more often than
+	// wireguard-go's HandshakeInitationRate (20 ms). An immediate restart
+	// can legitimately have its first initiation rate-limited, triggering
+	// the normal five-second handshake retry. Keep this ordinary restart
+	// test outside that deliberately exercised edge case.
+	phaseStarted = time.Now()
+	time.Sleep(device.HandshakeInitationRate + 10*time.Millisecond)
+	logE2EPhase(t, "peer handshake initiation cooldown", phaseStarted)
+
 	phaseStarted = time.Now()
 	restarted, newPort, newUser, newPass := server.startClient(t, server.keys.public)
 	logE2EPhase(t, "restarted client startup", phaseStarted)
@@ -331,6 +340,34 @@ func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	}()
 	requestThroughTunnel(t, server, restarted, newPort, newUser, newPass, "first")
 	logE2EPhase(t, "test body excluding deferred shutdown", testStarted)
+}
+
+// An abrupt restart may occur within the server peer's 20 ms handshake
+// rate-limit window. In that case the first handshake may be dropped and the
+// client must still recover using WireGuard's normal retransmission (roughly
+// five seconds). This is a separate reliability test: the ordinary restart
+// test should not mistake intended protocol flood protection for slow startup.
+func TestWireGuardE2EImmediateRestartWithRetry(t *testing.T) {
+	server := newTestWireGuardServer(t, "immediate-restart")
+	first, firstPort, firstUser, firstPass := server.startClient(t, server.keys.public)
+	defer func() {
+		if first != nil {
+			first.close()
+		}
+	}()
+	requestThroughTunnel(t, server, first, firstPort, firstUser, firstPass, "immediate-restart")
+	first.close()
+	first = nil
+
+	// No cooldown here: test the real rapid-restart condition. A normal
+	// WireGuard retransmission can cost about five seconds, so retain the
+	// 12-second HTTP deadline and never retry through the host TCP/IP stack.
+	restarted, port, username, password := server.startClient(t, server.keys.public)
+	defer restarted.close()
+	requestThroughTunnel(t, server, restarted, port, username, password, "immediate-restart")
+	if !hasHandshake(t, restarted.device) {
+		t.Fatal("rapidly restarted WireGuard client did not complete a handshake")
+	}
 }
 
 func TestWireGuardE2EWrongPeerKeyFailsClosed(t *testing.T) {

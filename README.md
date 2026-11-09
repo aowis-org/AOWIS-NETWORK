@@ -38,13 +38,20 @@ accidental direct access to an OS-only HTTP listener. It needs loopback
 TCP and UDP sockets but no admin rights, Docker, external VPN server, or
 privileged network interface. The tests must run successfully on a system with
 the pinned Go dependencies present before this milestone is considered verified.
-A first Linux run reached an HTTP response-header timeout after 5 seconds in
-the cold-start test, while the independent-tunnels test did not report a failure.
-The harness now grants 12 seconds for a first WireGuard handshake (including
-retransmission) and, on failure, prints SOCKS/HTTP progress, redacted peer
-handshake/traffic counters, the server handler count, and a diagnostic HTTP
-request made **through gVisor**, not the host network. These extra diagnostics
-do not count as a passing test or authorize direct-network fallback.
+After diagnostic runs, the initial encrypted HTTP connection was fast (4–34 ms),
+while a same-key client restart sometimes took ~5.2 seconds at SOCKS5 CONNECT.
+This aligns with wireguard-go's **20 ms per-peer handshake-initiation flood
+limit**: the server may discard a rapid second initiation, and the client then
+retries on WireGuard's normal ~5-second handshake timer. The regular restart
+scenario now waits a bounded 30 ms after shutdown to avoid that intentional
+flood-protection window; an **additional immediate-restart test** keeps the
+no-wait scenario and confirms it still succeeds via the tunnel, even if a
+handshake retransmission is required. This does not change wireguard-go's
+protocol security limits or production session start/stop behavior.
+
+Failures report SOCKS/HTTP progress, redacted peer handshake/traffic counters,
+server handler count, and a diagnostic HTTP request made **through gVisor**,
+not through host networking. No failure authorizes direct-network fallback.
 
 To rerun only the actual WireGuard end-to-end tests:
 

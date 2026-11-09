@@ -38,6 +38,13 @@ accidental direct access to an OS-only HTTP listener. It needs loopback
 TCP and UDP sockets but no admin rights, Docker, external VPN server, or
 privileged network interface. The tests must run successfully on a system with
 the pinned Go dependencies present before this milestone is considered verified.
+A first Linux run reached an HTTP response-header timeout after 5 seconds in
+the cold-start test, while the independent-tunnels test did not report a failure.
+The harness now grants 12 seconds for a first WireGuard handshake (including
+retransmission) and, on failure, prints SOCKS/HTTP progress, redacted peer
+handshake/traffic counters, the server handler count, and a diagnostic HTTP
+request made **through gVisor**, not the host network. These extra diagnostics
+do not count as a passing test or authorize direct-network fallback.
 
 To rerun only the actual WireGuard end-to-end tests:
 

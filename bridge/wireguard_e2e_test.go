@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
@@ -9,10 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +95,8 @@ type testWireGuardServer struct {
 	clientKeys testPeerKeys
 	endpoint   string
 	httpServer *http.Server
+	hits       atomic.Int64
+	serveError chan error
 }
 
 func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
@@ -120,7 +126,13 @@ func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	server := &testWireGuardServer{
+		device: dev, keys: serverKeys, clientKeys: clientKeys,
+		endpoint:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		serveError: make(chan error, 1),
+	}
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		server.hits.Add(1)
 		if request.URL.Path != "/probe" {
 			http.NotFound(writer, request)
 			return
@@ -130,12 +142,13 @@ func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
 	})
 	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: 2 * time.Second}
 	t.Cleanup(func() { _ = httpServer.Close() })
-	go func() { _ = httpServer.Serve(listener) }()
-	return &testWireGuardServer{
-		device: dev, keys: serverKeys, clientKeys: clientKeys,
-		endpoint:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-		httpServer: httpServer,
-	}
+	server.httpServer = httpServer
+	go func() {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			server.serveError <- err
+		}
+	}()
+	return server
 }
 
 func mustDecodeTestKey(t *testing.T, key string) []byte {
@@ -167,13 +180,83 @@ func newSOCKSHTTPClient(port uint16, username, password string, timeout time.Dur
 	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
-func requestThroughTunnel(t *testing.T, port uint16, user, pass, marker string) {
-	t.Helper()
-	client := newSOCKSHTTPClient(port, user, pass, 5*time.Second)
-	defer client.CloseIdleConnections()
+// Only report publicly observable WireGuard counters and endpoints. IpcGet
+// includes private and preshared keys: NEVER put its raw output in logs.
+func peerDiagnostics(dev *device.Device) string {
+	status, err := dev.IpcGet()
+	if err != nil {
+		return "WireGuard status unavailable: " + err.Error()
+	}
+	var selected []string
+	for _, line := range strings.Split(status, "\n") {
+		for _, prefix := range []string{
+			"listen_port=", "endpoint=", "last_handshake_time_sec=",
+			"tx_bytes=", "rx_bytes=", "allowed_ip=",
+		} {
+			if strings.HasPrefix(line, prefix) {
+				selected = append(selected, line)
+				break
+			}
+		}
+	}
+	return strings.Join(selected, ", ")
+}
+
+func directNetstackProbe(session *tunnelSession) string {
+	// Diagnostic only. Never use the host TCP/IP stack as fallback.
+	transport := &http.Transport{DialContext: session.network.DialContext, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
 	response, err := client.Get(fmt.Sprintf("http://%s:%d/probe", testServerIP, testHTTPPort))
 	if err != nil {
-		t.Fatalf("HTTP through encrypted tunnel: %v", err)
+		return "failed: " + err.Error()
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "body read failed: " + err.Error()
+	}
+	return fmt.Sprintf("HTTP %d, body=%q", response.StatusCode, data)
+}
+
+func requestThroughTunnel(t *testing.T, server *testWireGuardServer, session *tunnelSession, port uint16, user, pass, marker string) {
+	t.Helper()
+	// The WireGuard handshake retry interval is ~5 seconds. A 5-second HTTP
+	// timeout can prematurely kill the first (cold-start) handshake attempt.
+	client := newSOCKSHTTPClient(port, user, pass, 12*time.Second)
+	defer client.CloseIdleConnections()
+	var mu sync.Mutex
+	var stages []string
+	appendStage := func(stage string) {
+		mu.Lock()
+		stages = append(stages, stage)
+		mu.Unlock()
+	}
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		GotConn:              func(httptrace.GotConnInfo) { appendStage("SOCKS5 CONNECT completed") },
+		WroteRequest:         func(info httptrace.WroteRequestInfo) { appendStage(fmt.Sprintf("HTTP request written: %v", info.Err)) },
+		GotFirstResponseByte: func() { appendStage("first HTTP response byte received") },
+	})
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://%s:%d/probe", testServerIP, testHTTPPort), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		mu.Lock()
+		stagesText := strings.Join(stages, " -> ")
+		mu.Unlock()
+		serverError := "none"
+		select {
+		case problem := <-server.serveError:
+			serverError = problem.Error()
+		default:
+		}
+		t.Errorf("HTTP through encrypted tunnel: %v\nSOCKS/HTTP stages: %s\nserver requests: %d; serve error: %s\nserver WireGuard: %s\nclient WireGuard: %s\ndirect gVisor diagnostic (still through WireGuard): %s",
+			err, stagesText, server.hits.Load(), serverError, peerDiagnostics(server.device),
+			peerDiagnostics(session.device), directNetstackProbe(session))
+		t.FailNow()
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)
@@ -188,18 +271,24 @@ func requestThroughTunnel(t *testing.T, port uint16, user, pass, marker string) 
 func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	server := newTestWireGuardServer(t, "first")
 	session, port, user, pass := server.startClient(t, server.keys.public)
-	requestThroughTunnel(t, port, user, pass, "first")
+	defer func() {
+		if session != nil {
+			session.close()
+		}
+	}()
+	requestThroughTunnel(t, server, session, port, user, pass, "first")
 	if !hasHandshake(t, server.device) || !hasHandshake(t, session.device) {
 		t.Fatal("HTTP succeeded but WireGuard handshake was not recorded on both peers")
 	}
 	session.close()
+	session = nil
 	if conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))), 150*time.Millisecond); err == nil {
 		conn.Close()
 		t.Fatal("proxy listener remains open after session shutdown")
 	}
 	restarted, newPort, newUser, newPass := server.startClient(t, server.keys.public)
 	defer restarted.close()
-	requestThroughTunnel(t, newPort, newUser, newPass, "first")
+	requestThroughTunnel(t, server, restarted, newPort, newUser, newPass, "first")
 }
 
 func TestWireGuardE2EWrongPeerKeyFailsClosed(t *testing.T) {
@@ -226,8 +315,8 @@ func TestWireGuardE2EIndependentTunnels(t *testing.T) {
 	defer one.close()
 	two, portTwo, userTwo, passTwo := second.startClient(t, second.keys.public)
 	defer two.close()
-	requestThroughTunnel(t, portOne, userOne, passOne, "alpha")
-	requestThroughTunnel(t, portTwo, userTwo, passTwo, "beta")
+	requestThroughTunnel(t, first, one, portOne, userOne, passOne, "alpha")
+	requestThroughTunnel(t, second, two, portTwo, userTwo, passTwo, "beta")
 	bad := newSOCKSHTTPClient(portTwo, userOne, passOne, 2*time.Second)
 	defer bad.CloseIdleConnections()
 	response, err := bad.Get(fmt.Sprintf("http://%s:%d/probe", testServerIP, testHTTPPort))

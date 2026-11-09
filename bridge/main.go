@@ -27,8 +27,9 @@ import (
 )
 
 type tunnelSession struct {
-	device *device.Device
-	proxy  *proxyServer
+	device  *device.Device
+	network *netstack.Net
+	proxy   *proxyServer
 }
 
 var (
@@ -176,7 +177,7 @@ func startSession(config tunnelConfig) (*tunnelSession, string, string, uint16, 
 	}
 	proxy := newProxyServer(listener, username, password, tnet.DialContext)
 	proxy.start()
-	session := &tunnelSession{device: dev, proxy: proxy}
+	session := &tunnelSession{device: dev, network: tnet, proxy: proxy}
 	return session, username, password, uint16(listener.Addr().(*net.TCPAddr).Port), nil
 }
 

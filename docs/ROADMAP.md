@@ -8,16 +8,17 @@
 - Per-instance loopback SOCKS5 TCP listener with mandatory random credentials
 - Remote/in-tunnel DNS, explicit allowed IPs and no OS network privileges
 - C++ validation tests and Go protocol/forwarding unit tests
-- A self-contained userspace peer-to-peer integration harness (new, awaiting
-  execution against the pinned Go dependency cache): encrypted HTTP through
+- A self-contained userspace peer-to-peer integration harness (currently
+  investigating a first-session HTTP timeout observed on Linux): encrypted HTTP through
   the SOCKS5 adapter, WireGuard handshake assertions, wrong peer key, proxy
   shutdown/restart, independent tunnel credentials and no OS-host TCP bypass
 - Existing repository patch/snapshot mechanics, plus Linux build scripts
 
 ## Next work (ordered)
 
-1. **Finish end-to-end qualification:** run the newly added in-process WireGuard
-   integration harness on a normal development machine and address any
+1. **Finish end-to-end qualification:** investigate the first-session timeout
+   on a normal development machine using the instrumented HTTP stages, WireGuard
+   handshake/byte counters and a direct in-netstack diagnostic; address any
    failures; then extend with dropped UDP packets, DNS routing, repeated
    teardown, and a C++-to-Go ABI smoke test. The new tests do not require root,
    Docker, a kernel VPN interface, or an external peer.

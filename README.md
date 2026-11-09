@@ -8,8 +8,9 @@ proxy on `127.0.0.1` and no OS VPN interface or privileged network setup.
 The engine uses [wireguard-go](https://github.com/WireGuard/wireguard-go) and
 its existing [gVisor netstack](https://gvisor.dev/docs/architecture_guide/networking/)
 integration. It is linked into the application as a Go **C archive** through a
-small C ABI. No Go child process, wireproxy executable, Qt dependency, or
-kernel TUN/TAP device is used.
+small C ABI. No Go child process, wireproxy executable or kernel TUN/TAP device is used.
+The core library has no Qt dependency; the Qt HTTP adapter is a separate
+optional target.
 
 **Current scope is a foundation, not a GUI feature.** AOWIS GUI and Mobile are
 not integrated yet; the tunnel has no UI, `.conf` importer, secure key store,
@@ -69,6 +70,56 @@ cmake -S . -B build-cpp-only -G Ninja \
 cmake --build build-cpp-only
 ctest --test-dir build-cpp-only --output-on-failure
 ```
+
+## Optional Qt HTTP transport (Stage 3)
+
+Qt 6 Network is detected automatically by CMake. When present the additional
+`AOWIS::NetworkQt` target is built, with a separate `aowis-network-qt-http`
+CTest test. The WireGuard engine (`AOWIS::Network`) itself **does not depend
+on Qt**. To require Qt explicitly, configure with
+`-DAOWIS_NETWORK_WITH_QT=ON`; to disable it use `=OFF` (default `AUTO`).
+
+The companion `QtSocks5HttpClient` owns one private `QNetworkAccessManager`
+configured for the **authenticated** SOCKS5 listener from a running tunnel.
+It supports GET, HEAD, POST, PUT, DELETE and custom HTTP methods. Requests are
+restricted to the configured HTTP(S) **scheme, hostname and effective port**;
+invalid/other destinations fail asynchronously without opening a network
+connection. Loopback and wildcard service addresses are rejected because Qt
+can bypass proxies for local addresses. This intentionally means a service
+configured as `localhost` is **not supported** by the Qt adapter even if the
+remote peer's service uses loopback. Use a private tunnel IP or hostname.
+
+HTTP redirects are always manual, even if the caller supplies a different
+redirect policy. The caller may follow an approved redirect by issuing a new
+request through the adapter; cross-endpoint redirects fail closed. DNS names
+are supplied to the SOCKS5 endpoint for in-tunnel DNS resolution. TLS requests
+continue to use Qt's normal certificate verification. A configured local
+proxy is **not** evidence of a completed WireGuard handshake.
+
+```cpp
+#include "aowis/network/qt_http_client.h"
+
+// After aowis::network::WireGuardClient::start(config) succeeds:
+aowis::network::QtSocks5HttpClient http(
+    tunnel.proxy(), QUrl("http://10.30.0.1:8080"));
+if (!http.isConfigured()) {
+    // Handle http.configurationError(); do not try a direct request.
+}
+QNetworkReply* reply = http.get(
+    QNetworkRequest(QUrl("http://10.30.0.1:8080/health")));
+// Observe reply->finished() / reply->errorOccurred(), then deleteLater().
+```
+
+Construct the adapter **after** starting the tunnel; destroy the adapter and
+its outstanding replies **before** stopping/restarting it. Recreate the adapter
+after restart because SOCKS credentials and port are regenerated. Do not
+expose a raw `QNetworkAccessManager` with mutable proxy settings in the GUI.
+
+The Qt unit test uses a simulated authenticated SOCKS5 server to exercise
+proxy-side hostname forwarding, HTTP requests, wrong credentials, destination
+blocking and manual redirects. These tests are distinct from the Go real-peer
+encrypted HTTP tests. A complete **Qt-to-real-WireGuard** test, TLS test and
+cross-platform validation are future tasks.
 
 ## C++ integration
 

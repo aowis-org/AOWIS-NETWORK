@@ -56,6 +56,30 @@ multiple profiles share a WireGuard peer.
   `QNetworkProxy::setApplicationProxy()`. Do not reuse proxied Qt clients for
   unrelated direct-server requests.
 
+## Qt HTTP adapter (optional CMake target)
+
+`AOWIS::NetworkQt` wraps a **private** `QNetworkAccessManager` behind
+`QtSocks5HttpClient`. It is configured per service origin (scheme/host/port),
+not via `QNetworkProxy::setApplicationProxy`. The adapter accepts
+`WireGuardClient::proxy()` only after the tunnel has started; an unavailable
+proxy produces failed replies. It checks each requested URL and enforces
+`QNetworkRequest::ManualRedirectPolicy` before using Qt's network manager.
+
+Only the intended service origin may be requested. Qt's documented proxy
+bypass for loopback destinations is handled by refusing loopback/wildcard
+service addresses, rather than assuming `setProxy()` overrides Qt's socket
+behavior. The SOCKS5 proxy has `HostNameLookupCapability`, so service names
+can be resolved inside the tunnel instead of via local OS DNS. Both the
+outer WireGuard peer's UDP endpoint and local SOCKS5 listener remain handled
+by the host network stack, as intended. HTTPS still uses Qt's TLS checks.
+
+A tunnel and its Qt client must be managed together: create the Qt adapter
+after tunnel startup, destroy the adapter and its replies before stopping the
+tunnel, and recreate the adapter after restart. The adapter does not presently
+own the tunnel or report real peer reachability. An HTTP redirect is returned
+to the caller and must be processed manually; no implicit redirect follows a
+URL outside the service's origin.
+
 ## Build dependencies
 
 `bridge/go.mod` pins `golang.zx2c4.com/wireguard` to a specific upstream commit,

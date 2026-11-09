@@ -18,30 +18,38 @@
   limit, consistent with the observed first-initiation drop and ~5-second
   retransmission. The normal restart test now stays outside that window; an
   additional immediate-restart test covers the expected retry behavior.
-  This cause remains a strong hypothesis pending rerun of both scenarios.
+  The subsequent run completed 3/3 CTest groups and 10 repetitions each of
+  the normal and immediate-restart scenarios (20/20). Normal restarts finished
+  in milliseconds; one immediate restart took 5.198 seconds before SOCKS5
+  CONNECT, consistent with the upstream handshake retry timer. This strongly
+  supports the rate-limit explanation but is not an instrumented WireGuard
+  packet-level proof.
+- Optional `AOWIS::NetworkQt` adapter for HTTP requests through authenticated
+  SOCKS5; a dedicated private `QNetworkAccessManager` per service origin,
+  explicit request guard, manual redirects and remote SOCKS5 DNS. Qt test
+  harness uses a fake SOCKS5 endpoint for authentication, method forwarding
+  and fail-closed assertions. Full Qt test execution awaits a Qt-enabled build.
 - Existing repository patch/snapshot mechanics, plus Linux build scripts
 
 ## Next work (ordered)
 
-1. **Finish end-to-end qualification:** verify normal and immediate-restart
-   behavior in repeated local runs, and confirm the 20 ms handshake-rate-limit
-   hypothesis without changing upstream WireGuard timers. Then extend with
-   dropped UDP packets, DNS routing, repeated
-   teardown, and a C++-to-Go ABI smoke test. The new tests do not require root,
-   Docker, a kernel VPN interface, or an external peer.
-2. **Qt integration adapter:** configure a dedicated `QNetworkAccessManager`
-   with per-server authenticated SOCKS5 settings; verify Qt proxy authentication,
-   remote DNS, TLS, cancellation, and pool/reconnect behavior.
-3. **GUI integration:** add transport selection to server profiles; ensure
-   DVMDB and MAP requests, background health checks and checkout flows all use
-   the intended per-server connection manager and fail closed.
+1. **Qt adapter qualification:** run `aowis-network-qt-http` on Linux with
+   Qt 6, then add a C++/Qt-to-real-WireGuard peer smoke test and verify HTTPS,
+   cancellation, pooling and reconnect behavior. Stage 3 adapter introduced,
+   but the sandbox has no Qt6 headers/libraries to compile its Qt target.
+2. **Additional tunnel qualification:** dropped UDP packets, DNS routing,
+   repeated teardown and C++/Go ABI integration checks; don't change
+   upstream WireGuard handshake timers or mask rapid-restart retransmissions.
+3. **GUI integration:** add per-server transport selection, wire the DVMDB and
+   MAP clients, background health and checkout flows into the correct adapter,
+   and enforce fail-closed transport selection.
 4. **Security/lifecycle:** secure key storage, WireGuard `.conf` import,
    handshake status, retries/reconnect, timed shutdown, logging hygiene and
-   proxy lifetime ownership; implement meaningful live peer-health signals.
-5. **Platforms:** validate Windows and Android cross-builds with CGO and Qt;
-   verify app lifecycle and packaging, then integrate Mobile.
-6. **Later transports:** a browser/WebAssembly-compatible gateway for clients
-   without UDP sockets, and optional server-side embedded WireGuard services.
+   proxy lifetime ownership; implement meaningful peer-health signals.
+5. **Platforms:** qualify Windows and Android CGO and Qt builds, lifecycle and
+   packaging, then reuse the library in Mobile.
+6. **Later transports:** browser/WebAssembly-compatible gateway and optional
+   server-side embedded WireGuard.
 
-Do not assert cross-platform support, successful handshakes, or production
+Do not assert cross-platform support, complete Qt integration, or production
 security based on the current foundation alone.

@@ -13,8 +13,9 @@ The core library has no Qt dependency; the Qt HTTP adapter is a separate
 optional target.
 
 **Current scope is a foundation, not a GUI feature.** AOWIS GUI and Mobile are
-not integrated yet; the tunnel has no UI, `.conf` importer, secure key store,
-handshake-health reporting, or automatic reconnect policy. SOCKS5 supports
+not integrated yet; the tunnel has no UI, handshake-health reporting, or
+automatic reconnect policy. Profiles are stored by AOWIS-CONFIG; this library
+provides the single `.conf` parser (`parseWireGuardConf()`). SOCKS5 supports
 TCP CONNECT only. Browser/WebAssembly builds are not supported by this engine.
 
 ## Build and test (Linux)
@@ -29,9 +30,10 @@ fetched into the usual Go module cache, not vendored into this repository.
 ./compile_linux_tests.sh
 ```
 
-With WireGuard enabled, CTest now executes three test groups: the C++ API
-checks, SOCKS5 protocol tests, and **a real userspace WireGuard-to-WireGuard
-loopback UDP integration suite**. The integration suite creates two independent
+With WireGuard enabled, CTest executes the C++ API checks, SOCKS5 protocol
+tests, and **a real userspace WireGuard-to-WireGuard loopback UDP integration
+suite**. When Qt is also found, it additionally runs the Qt SOCKS5 unit suite
+and the full-stack Qt-to-real-WireGuard test (six CTest groups total, including the `.conf` parser suite). The integration suite creates two independent
 in-process peers and a private HTTP service reachable only via the in-memory
 netstack, and checks encrypted HTTP, handshake records, wrong-key rejection,
 proxy shutdown/restart, per-tunnel credential isolation, and rejection of
@@ -118,8 +120,55 @@ expose a raw `QNetworkAccessManager` with mutable proxy settings in the GUI.
 The Qt unit test uses a simulated authenticated SOCKS5 server to exercise
 proxy-side hostname forwarding, HTTP requests, wrong credentials, destination
 blocking and manual redirects. These tests are distinct from the Go real-peer
-encrypted HTTP tests. A complete **Qt-to-real-WireGuard** test, TLS test and
-cross-platform validation are future tasks.
+encrypted HTTP tests.
+
+When **both WireGuard and Qt are enabled**, CTest also builds a dedicated
+`bridge/testpeer` Go executable and runs `aowis-network-qt-wireguard-e2e`.
+This is the **complete native application data path**: Qt's
+`QNetworkAccessManager` -> authenticated SOCKS5 -> public C++ `WireGuardClient`
+-> Go C ABI -> wireguard-go encrypted UDP -> a separate server-side WireGuard
+device -> gVisor-only HTTP listener. The test covers GET/POST, origin rejection,
+shutdown without host fallback and failure to connect with the wrong peer key.
+All keys are generated per test run. The Go peer is **test-only** and is never
+installed or linked into the production library. No root, Docker or kernel TUN
+interface is required. This full-stack test is not a replacement for HTTPS,
+DNS, loss/recovery, cancellation and cross-platform qualification.
+
+```bash
+ctest --test-dir build-linux-tests --output-on-failure \
+  -R '^aowis-network-qt-wireguard-e2e$'
+# To require the adapter rather than silently skip it when Qt is absent:
+cmake -S . -B build-linux-tests -G Ninja \
+  -DAOWIS_NETWORK_WITH_WIREGUARD=ON -DAOWIS_NETWORK_WITH_QT=ON -DBUILD_TESTING=ON
+```
+
+## Parsing WireGuard `.conf` files
+
+`aowis/network/wireguard_conf.h` provides `parseWireGuardConf(text)`, **the
+only `.conf` parser in AOWIS**. It accepts exactly what the embedded engine can
+run and returns a `WireGuardConfig` plus line-numbered diagnostics that never
+contain keys or values:
+
+- wg(8)/wg-quick syntax: case-insensitive sections and keys, `#` comments,
+  blanks in headers, BOM, CRLF, appending `AllowedIPs`/`DNS`/`Address` lines.
+- Exactly one `[Interface]` (`PrivateKey`, one `Address`, `DNS`, `MTU`) and
+  exactly one `[Peer]` (`PublicKey`, `PresharedKey`, `Endpoint`,
+  `AllowedIPs`, `PersistentKeepalive`).
+- `ListenPort`, `FwMark`, `Table`, `SaveConfig` and `Pre/PostUp/Down` are
+  **warnings** (ignored; hooks are never run); DNS search domains are ignored
+  with a warning; anything else is an **error**.
+- On errors `config` is reset to defaults, so no half-parsed key is handed on.
+
+The GUI calls it while importing or editing a profile (show diagnostics,
+refuse to save on errors) and again before `WireGuardClient::start()`:
+
+```cpp
+aowis::network::WireGuardConfParse parsed = aowis::network::parseWireGuardConf(storedText);
+if (!parsed.ok()) {
+    // Show parsed.diagnostics (line, message); never start the tunnel.
+}
+tunnel.start(parsed.config, &error);
+```
 
 ## C++ integration
 
@@ -133,7 +182,7 @@ by the library. Example:
 aowis::network::WireGuardClient tunnel;
 aowis::network::WireGuardConfig config;
 config.address = "10.30.0.2/32";
-config.privateKey = privateKeyFromSecureStorage;
+config.privateKey = privateKey; // usually from parseWireGuardConf()
 config.peerPublicKey = serverPublicKey;
 config.endpoint = "vpn.example.com:51820";
 config.allowedIPs = {"10.30.0.0/24"};

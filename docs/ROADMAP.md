@@ -28,24 +28,40 @@
   SOCKS5; a dedicated private `QNetworkAccessManager` per service origin,
   explicit request guard, manual redirects and remote SOCKS5 DNS. Qt test
   harness uses a fake SOCKS5 endpoint for authentication, method forwarding
-  and fail-closed assertions. Full Qt test execution awaits a Qt-enabled build.
+  and fail-closed assertions. The user-reported Qt6 build passed all four
+  CTest suites on Linux after enabling this adapter.
+- Test-only Go WireGuard peer executable plus native C++/Qt full-stack CTest:
+  private HTTP server inside server gVisor, public C++ API and Go C ABI on the
+  client, Qt GET/POST through the authenticated SOCKS5 proxy. Tests include
+  wrong-key rejection, blocked loopback destinations and stopped-tunnel failure.
+  The new complete-path test is implemented but has not yet run in a Qt-enabled
+  environment; its execution must be confirmed on the developer's machine.
+- `parseWireGuardConf()`: the single AOWIS `.conf` parser, accepting exactly
+  the subset the embedded engine runs (one interface address, one peer),
+  wg(8)-compatible syntax, warnings for ignored wg-quick host directives,
+  value-free line-numbered diagnostics; `aowis-network-wireguard-conf` CTest
+  and an ASan/UBSan mutation run. Not yet exercised against the real engine
+  with parsed output on the developer's machine.
 - Existing repository patch/snapshot mechanics, plus Linux build scripts
 
 ## Next work (ordered)
 
-1. **Qt adapter qualification:** run `aowis-network-qt-http` on Linux with
-   Qt 6, then add a C++/Qt-to-real-WireGuard peer smoke test and verify HTTPS,
-   cancellation, pooling and reconnect behavior. Stage 3 adapter introduced,
-   but the sandbox has no Qt6 headers/libraries to compile its Qt target.
+1. **Qt adapter qualification:** run the new
+   `aowis-network-qt-wireguard-e2e` test (all layers in one flow) on Linux,
+   repeat it for cold-start/restart consistency, then qualify HTTPS, remote
+   DNS, cancellation, pooling and reconnect behavior. The prior Qt adapter
+   CTest passed on the developer's machine; the new full-stack test still
+   requires verification on that same environment.
 2. **Additional tunnel qualification:** dropped UDP packets, DNS routing,
    repeated teardown and C++/Go ABI integration checks; don't change
    upstream WireGuard handshake timers or mask rapid-restart retransmissions.
 3. **GUI integration:** add per-server transport selection, wire the DVMDB and
    MAP clients, background health and checkout flows into the correct adapter,
    and enforce fail-closed transport selection.
-4. **Security/lifecycle:** secure key storage, WireGuard `.conf` import,
-   handshake status, retries/reconnect, timed shutdown, logging hygiene and
-   proxy lifetime ownership; implement meaningful peer-health signals.
+4. **Security/lifecycle:** handshake status, retries/reconnect, timed
+   shutdown, logging hygiene and proxy lifetime ownership; implement
+   meaningful peer-health signals. (Key storage belongs to AOWIS-CONFIG;
+   `.conf` parsing is implemented, see below.)
 5. **Platforms:** qualify Windows and Android CGO and Qt builds, lifecycle and
    packaging, then reuse the library in Mobile.
 6. **Later transports:** browser/WebAssembly-compatible gateway and optional

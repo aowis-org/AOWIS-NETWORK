@@ -37,6 +37,23 @@ credentials. The C++ type owns that handle and cannot be copied or moved.
 Each server profile should have an independent `WireGuardClient`, even when
 multiple profiles share a WireGuard peer.
 
+## Configuration parsing and storage
+
+`parseWireGuardConf()` (src/wireguard_conf.cpp) is the single WireGuard
+`.conf` parser of AOWIS. It defines the supported subset as exactly what
+`WireGuardClient` and the Go bridge can run: one interface address, IP DNS
+servers, CIDR allowed IPs, `host:port` endpoints, 32-byte base64 keys. Shape
+checks happen in C++; netip in the bridge performs the final parse when the
+tunnel starts. Unsupported directives are errors rather than silently dropped,
+except wg-quick host directives that cannot change the tunnel's meaning
+(hooks, routing table, fwmark, listen port), which are warnings and are never
+executed.
+
+Storage is not this library's job: AOWIS-CONFIG keeps the original text
+verbatim (with keys) in the owning application's private configuration root
+and does not parse it. Applications parse on import/edit for diagnostics and
+again right before `start()`.
+
 ## Current security properties
 
 - No direct fallback: an absent/failed embedded engine returns an error.
@@ -93,6 +110,17 @@ client SOCKS5 -> gVisor TCP -> wireguard-go UDP -> independent server
 wireguard-go -> server gVisor HTTP, with no OS VPN interface. It is a
 repeatable local harness, **not** proof of interoperability with an external
 OS WireGuard server; that remains a separate qualification task.
+
+The additional Qt-to-real-WireGuard test uses a **test-only Go executable**
+(`bridge/testpeer`) with its own ephemeral loopback UDP listener and an HTTP
+server reachable exclusively over the server's in-memory gVisor netstack.
+The C++ test launches that server through Qt `QProcess`, generates a client
+through the ordinary `WireGuardClient`/Go C ABI, and issues Qt HTTP GET/POST
+through the real authenticated SOCKS5 proxy. It also confirms wrong-key
+failure, origin blocking, and stopped-proxy failure. The test peer is never a
+runtime dependency for the application and is not installed as a production
+server. This test remains distinct from interoperability, TLS, IPv6 and
+cross-platform tests.
 
 At present the native implementation targets Linux development. Windows and
 Android are intended downstream targets, but their cross toolchains and CGO

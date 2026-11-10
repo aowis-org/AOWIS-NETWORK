@@ -4,7 +4,7 @@ project(AOWISNetwork VERSION 0.1.0 LANGUAGES C CXX)
 include(CTest)
 option(AOWIS_NETWORK_WITH_WIREGUARD "Build embedded wireguard-go + gVisor netstack" ON)
 
-add_library(aowis-network STATIC src/wireguard_client.cpp)
+add_library(aowis-network STATIC src/wireguard_client.cpp src/wireguard_conf.cpp)
 add_library(AOWIS::Network ALIAS aowis-network)
 target_compile_features(aowis-network PUBLIC cxx_std_17)
 target_include_directories(aowis-network PUBLIC
@@ -72,9 +72,38 @@ if(BUILD_TESTING)
         add_test(NAME aowis-network-qt-http COMMAND aowis-network-qt-tests)
         set_tests_properties(aowis-network-qt-http PROPERTIES TIMEOUT 30)
     endif()
+    # Full encrypted path: Qt HTTP -> C++ tunnel -> Go C ABI -> real UDP
+    # WireGuard -> remote userspace netstack HTTP. The Go peer is a CTest-only
+    # executable, never linked into or installed with the production library.
+    if(AOWIS_NETWORK_WITH_WIREGUARD AND TARGET aowis-network-qt)
+        set(AOWIS_TEST_PEER_BIN "${CMAKE_CURRENT_BINARY_DIR}/go/aowis-network-test-peer")
+        add_custom_command(
+            OUTPUT "${AOWIS_TEST_PEER_BIN}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/go"
+            COMMAND "${CMAKE_COMMAND}" -E env CGO_ENABLED=1 GOWORK=off
+                "${AOWIS_GO_EXECUTABLE}" build -mod=readonly
+                -o "${AOWIS_TEST_PEER_BIN}" ./testpeer
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
+            DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/testpeer/main.go"
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.mod"
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.sum"
+            COMMENT "Building isolated userspace WireGuard Qt test peer"
+            VERBATIM)
+        add_custom_target(aowis-network-test-peer DEPENDS "${AOWIS_TEST_PEER_BIN}")
+        add_executable(aowis-network-qt-wireguard-tests tests/qt_wireguard_e2e_test.cpp)
+        target_link_libraries(aowis-network-qt-wireguard-tests PRIVATE AOWIS::NetworkQt)
+        add_dependencies(aowis-network-qt-wireguard-tests aowis-network-test-peer)
+        add_test(NAME aowis-network-qt-wireguard-e2e
+            COMMAND aowis-network-qt-wireguard-tests "${AOWIS_TEST_PEER_BIN}")
+        set_tests_properties(aowis-network-qt-wireguard-e2e PROPERTIES TIMEOUT 45)
+    endif()
     add_executable(aowis-network-tests tests/wireguard_client_test.cpp)
     target_link_libraries(aowis-network-tests PRIVATE AOWIS::Network)
     add_test(NAME aowis-network-client COMMAND aowis-network-tests)
+    add_executable(aowis-network-conf-tests tests/wireguard_conf_test.cpp)
+    target_link_libraries(aowis-network-conf-tests PRIVATE AOWIS::Network)
+    add_test(NAME aowis-network-wireguard-conf COMMAND aowis-network-conf-tests)
     if(AOWIS_NETWORK_WITH_WIREGUARD)
         add_test(NAME aowis-network-go-tests
             COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^TestSOCKS5" ./...)

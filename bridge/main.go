@@ -8,6 +8,7 @@ package main
 import "C"
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -86,6 +88,36 @@ func parseAddresses(input string) ([]netip.Addr, error) {
 	return result, nil
 }
 
+// wireguard-go's IPC accepts only a numeric UDP endpoint. Resolve the
+// outer peer on the host before starting the private network stack.
+func resolvePeerEndpoint(endpoint string) (netip.AddrPort, error) {
+	if endpoint == "" {
+		return netip.AddrPort{}, errors.New("missing WireGuard peer endpoint")
+	}
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil || host == "" || strings.ContainsAny(host, "\r\n\t ") {
+		return netip.AddrPort{}, errors.New("invalid WireGuard peer endpoint")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return netip.AddrPort{}, errors.New("invalid WireGuard peer UDP port")
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil {
+			return netip.AddrPort{}, fmt.Errorf("resolve WireGuard peer %q: %w", host, err)
+		}
+		if len(addresses) == 0 {
+			return netip.AddrPort{}, fmt.Errorf("no IP addresses for WireGuard peer %q", host)
+		}
+		addr = addresses[0]
+	}
+	return netip.AddrPortFrom(addr.Unmap(), uint16(portNumber)), nil
+}
+
 func validateConfig(config tunnelConfig) ([]netip.Addr, []netip.Addr, string, error) {
 	address, err := parseAddress(config.address)
 	if err != nil || address.IsUnspecified() {
@@ -106,17 +138,6 @@ func validateConfig(config tunnelConfig) ([]netip.Addr, []netip.Addr, string, er
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if config.endpoint == "" {
-		return nil, nil, "", errors.New("missing WireGuard peer endpoint")
-	}
-	host, port, err := net.SplitHostPort(config.endpoint)
-	if err != nil || host == "" || strings.ContainsAny(host, "\r\n\t ") {
-		return nil, nil, "", errors.New("invalid WireGuard peer endpoint")
-	}
-	portNumber, err := strconv.Atoi(port)
-	if err != nil || portNumber < 1 || portNumber > 65535 {
-		return nil, nil, "", errors.New("invalid WireGuard peer UDP port")
-	}
 	if config.allowedIPs == "" {
 		return nil, nil, "", errors.New("missing WireGuard allowed IPs")
 	}
@@ -129,7 +150,11 @@ func validateConfig(config tunnelConfig) ([]netip.Addr, []netip.Addr, string, er
 		}
 		fmt.Fprintf(&ipc, "preshared_key=%s\n", preshared)
 	}
-	fmt.Fprintf(&ipc, "endpoint=%s\npersistent_keepalive_interval=%d\n", config.endpoint, config.keepalive)
+	peer, err := resolvePeerEndpoint(config.endpoint)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	fmt.Fprintf(&ipc, "endpoint=%s\npersistent_keepalive_interval=%d\n", peer.String(), config.keepalive)
 	for _, item := range strings.Split(config.allowedIPs, ",") {
 		prefix, err := netip.ParsePrefix(strings.TrimSpace(item))
 		if err != nil {

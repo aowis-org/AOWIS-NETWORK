@@ -291,6 +291,20 @@ func logE2EPhase(t *testing.T, name string, started time.Time) {
 	t.Logf("phase %s: %s", name, time.Since(started).Round(time.Millisecond))
 }
 
+func TestWireGuardE2EPeerEndpointForms(t *testing.T) {
+	for _, endpoint := range []string{"192.0.2.1:51825", "[2001:db8::1]:51825", "[fe80::1%eth0]:51825"} {
+		got, err := resolvePeerEndpoint(endpoint)
+		if err != nil || got.String() != endpoint {
+			t.Fatalf("endpoint %s: got %v, err %v", endpoint, got, err)
+		}
+	}
+	for _, endpoint := range []string{"", "localhost", "localhost:0", "localhost:65536"} {
+		if _, err := resolvePeerEndpoint(endpoint); err == nil {
+			t.Fatalf("accepted invalid endpoint %q", endpoint)
+		}
+	}
+}
+
 func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	testStarted := time.Now()
 	phaseStarted := time.Now()
@@ -331,6 +345,12 @@ func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	logE2EPhase(t, "peer handshake initiation cooldown", phaseStarted)
 
 	phaseStarted = time.Now()
+	// Exercise the hostname path on restart using local name resolution.
+	_, udpPort, err := net.SplitHostPort(server.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.endpoint = net.JoinHostPort("localhost", udpPort)
 	restarted, newPort, newUser, newPass := server.startClient(t, server.keys.public)
 	logE2EPhase(t, "restarted client startup", phaseStarted)
 	defer func() {

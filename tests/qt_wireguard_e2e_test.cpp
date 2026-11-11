@@ -130,6 +130,12 @@ void testFullStack(const QString& testPeerExecutable)
                 && post.body == "posted-via-wireguard",
                 "Qt POST failed across real encrypted tunnel");
 
+        aowis::network::WireGuardPeerStats stats;
+        require(tunnel.peerStats(&stats, &error), "Failed to read live peer counters from C++ ABI");
+        require(stats.lastHandshakeUnixSeconds > 0 && stats.receivedBytes > 0
+                && stats.transmittedBytes > 0 && !stats.endpoint.empty(),
+                "Peer statistics were empty after encrypted HTTP traffic");
+
         const HttpResult forbidden = receive(http.get(QNetworkRequest(
             QUrl(QStringLiteral("http://127.0.0.1:18080/probe")))), 1000);
         require(forbidden.error == QNetworkReply::ContentAccessDenied,
@@ -137,6 +143,9 @@ void testFullStack(const QString& testPeerExecutable)
     }
     tunnel.stop();
     require(!tunnel.isRunning(), "Stopped WireGuard tunnel still reports running");
+    aowis::network::WireGuardPeerStats stoppedStats;
+    require(!tunnel.peerStats(&stoppedStats, &error), "Stopped tunnel reported live peer statistics");
+
 
     // A stale proxy configuration must fail, not become a direct host route.
     {

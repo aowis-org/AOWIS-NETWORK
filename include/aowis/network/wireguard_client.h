@@ -29,6 +29,16 @@ struct Socks5Proxy {
     std::string password;
 };
 
+// One peer per embedded tunnel. Counters are since this particular tunnel
+// instance started (they reset on stop/restart). Zero handshake means none yet.
+// This is diagnostic data, never a signal of current peer connectivity.
+struct WireGuardPeerStats {
+    std::uint64_t receivedBytes = 0;
+    std::uint64_t transmittedBytes = 0;
+    std::int64_t lastHandshakeUnixSeconds = 0;
+    std::string endpoint;
+};
+
 class WireGuardClient final {
 public:
     WireGuardClient() = default;
@@ -45,6 +55,9 @@ public:
     void stop();
     bool isRunning() const;
     Socks5Proxy proxy() const;
+    // Queries the live wireguard-go device. Returns false if stopped or if
+    // its status cannot be read. Never returns private/preshared keys.
+    bool peerStats(WireGuardPeerStats* stats, std::string* error = nullptr) const;
 
 private:
     std::uint64_t handle_ = 0;

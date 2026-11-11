@@ -138,4 +138,41 @@ Socks5Proxy WireGuardClient::proxy() const
     return this->proxy_;
 }
 
+bool WireGuardClient::peerStats(WireGuardPeerStats* stats, std::string* error) const
+{
+    if (stats == nullptr) {
+        if (error != nullptr) *error = "Missing WireGuard statistics output";
+        return false;
+    }
+    *stats = WireGuardPeerStats{};
+    if (!this->isRunning()) {
+        if (error != nullptr) *error = "WireGuard tunnel is not running";
+        return false;
+    }
+#ifndef AOWIS_NETWORK_WITH_WIREGUARD
+    if (error != nullptr) *error = "Embedded WireGuard engine unavailable";
+    return false;
+#else
+    std::array<char, 512> endpoint{};
+    std::array<char, 256> bridge_error{};
+    std::uint64_t rx = 0;
+    std::uint64_t tx = 0;
+    std::int64_t handshake = 0;
+    const int ok = AowisWGReadPeerStats(
+        this->handle_, &rx, &tx, &handshake,
+        endpoint.data(), static_cast<int>(endpoint.size()),
+        bridge_error.data(), static_cast<int>(bridge_error.size()));
+    if (!ok) {
+        if (error != nullptr) *error = bridge_error.data();
+        return false;
+    }
+    stats->receivedBytes = rx;
+    stats->transmittedBytes = tx;
+    stats->lastHandshakeUnixSeconds = handshake;
+    stats->endpoint = endpoint.data();
+    if (error != nullptr) error->clear();
+    return true;
+#endif
+}
+
 } // namespace aowis::network

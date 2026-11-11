@@ -271,4 +271,45 @@ func AowisWGStop(handle C.uint64_t) {
 	}
 }
 
+func readSessionStats(session *tunnelSession) (peerStats, error) {
+	ipc, err := session.device.IpcGet()
+	if err != nil {
+		return peerStats{}, errors.New("unable to query WireGuard device")
+	}
+	return parsePeerStats(ipc)
+}
+
+//export AowisWGReadPeerStats
+func AowisWGReadPeerStats(handle C.uint64_t, rx, tx *C.uint64_t, handshake *C.int64_t,
+	endpoint *C.char, endpointCapacity C.int, errorOut *C.char, errorCapacity C.int) C.int {
+	if rx == nil || tx == nil || handshake == nil || endpoint == nil ||
+		endpointCapacity < 2 || errorOut == nil || errorCapacity < 2 {
+		writeCString(errorOut, errorCapacity, "invalid WireGuard statistics arguments")
+		return 0
+	}
+	// Holding the registry lock prevents session Close during IpcGet.
+	sessionMu.Lock()
+	session := sessions[uint64(handle)]
+	if session == nil {
+		sessionMu.Unlock()
+		writeCString(errorOut, errorCapacity, "WireGuard tunnel is not running")
+		return 0
+	}
+	stats, err := readSessionStats(session)
+	sessionMu.Unlock()
+	if err != nil {
+		writeCString(errorOut, errorCapacity, err.Error())
+		return 0
+	}
+	if !writeCString(endpoint, endpointCapacity, stats.endpoint) {
+		writeCString(errorOut, errorCapacity, "WireGuard peer endpoint buffer too small")
+		return 0
+	}
+	*rx = C.uint64_t(stats.receivedBytes)
+	*tx = C.uint64_t(stats.transmittedBytes)
+	*handshake = C.int64_t(stats.handshakeSeconds)
+	writeCString(errorOut, errorCapacity, "")
+	return 1
+}
+
 func main() {}

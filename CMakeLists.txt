@@ -25,6 +25,7 @@ if(AOWIS_NETWORK_WITH_WIREGUARD)
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/bridge/main.go"
+            "${CMAKE_CURRENT_SOURCE_DIR}/bridge/stats.go"
             "${CMAKE_CURRENT_SOURCE_DIR}/bridge/socks5.go"
             "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.mod"
             "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.sum"
@@ -105,6 +106,10 @@ if(BUILD_TESTING)
     target_link_libraries(aowis-network-conf-tests PRIVATE AOWIS::Network)
     add_test(NAME aowis-network-wireguard-conf COMMAND aowis-network-conf-tests)
     if(AOWIS_NETWORK_WITH_WIREGUARD)
+        add_test(NAME aowis-network-peer-stats
+            COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^TestPeerStats" .)
+        set_tests_properties(aowis-network-peer-stats PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
         add_test(NAME aowis-network-go-tests
             COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^TestSOCKS5" ./...)
         set_tests_properties(aowis-network-go-tests PROPERTIES

@@ -8,6 +8,11 @@ int main()
     aowis::network::WireGuardClient client;
     assert(!client.isRunning());
     assert(client.proxy().port == 0);
+    aowis::network::WireGuardPeerStats stats;
+    std::string stats_error;
+    assert(!client.peerStats(&stats, &stats_error));
+    assert(!stats_error.empty());
+    assert(!client.peerStats(nullptr, &stats_error));
 
     std::string error;
     aowis::network::WireGuardConfig invalid;

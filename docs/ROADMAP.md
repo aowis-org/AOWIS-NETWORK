@@ -57,8 +57,8 @@
    upstream WireGuard handshake timers or mask rapid-restart retransmissions.
 3. **GUI integration:** implemented: per-connection transport selection for
    DVMDB and the map server, shared tunnels per profile, fail-closed
-   selection, DVMDB and map health checks through the tunnel. Open: DVMDB
-   working-copy/network operations still use the direct connection.
+   selection, DVMDB and map health checks through the tunnel, and DVMDB
+   private checkouts and personal-repository working-copy traffic.
 4. **Security/lifecycle:** implemented: handshake/traffic telemetry
    (`WireGuardClient::telemetry()`), peer host-name re-resolution with
    multi-address failover after 135 s without a handshake (as wireguard-tools'

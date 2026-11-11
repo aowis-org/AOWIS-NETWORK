@@ -59,6 +59,9 @@ again right before `start()`.
 - No direct fallback: an absent/failed embedded engine returns an error.
 - Proxied destinations use **in-tunnel** DNS when DNS servers are supplied.
 - The WireGuard public endpoint uses normal host-side DNS and UDP transport.
+  A host-name endpoint is resolved at start and again after 135 s without a
+  handshake; the peer then moves to the next resolved address (or the new
+  one if the name moved). Numeric endpoints are never changed.
 - Allowed IPs are applied to the WireGuard peer, not as OS route changes.
 - Only authenticated SOCKS5 TCP CONNECT is accepted. SOCKS5 UDP is not
   implemented; an attacker cannot use unauthenticated `NO AUTH` negotiation.

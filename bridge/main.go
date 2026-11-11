@@ -37,6 +37,95 @@ type tunnelSession struct {
 	// called on a device that is being or has been closed.
 	mu     sync.Mutex
 	closed bool
+
+	// Endpoint re-resolution (see monitorEndpoint). Only for host names;
+	// numeric endpoints never change and get no monitor.
+	peerHost      string
+	peerPort      uint16
+	peerPublicHex string
+	resolve       func(context.Context, string) ([]netip.Addr, error)
+	monitorCancel context.CancelFunc
+	monitorDone   chan struct{}
+}
+
+// The 135 s threshold is wireguard-tools' reresolve-dns.sh: sessions renew
+// every 120 s (REKEY_AFTER_TIME) while packets flow, plus a retry margin,
+// so a live peer never reaches it. The name is resolved once at start.
+const (
+	reresolveStaleAfter    = 135 * time.Second
+	reresolveCheckInterval = 30 * time.Second
+	reresolveLookupTimeout = 5 * time.Second
+)
+
+// endpointStale reports whether the peer has had no handshake for
+// reresolveStaleAfter, counting from the session start until the first one.
+func endpointStale(now, started time.Time, lastHandshakeUnixMs int64) bool {
+	reference := started
+	if lastHandshakeUnixMs > 0 {
+		reference = time.UnixMilli(lastHandshakeUnixMs)
+	}
+	return now.Sub(reference) >= reresolveStaleAfter
+}
+
+// nextPeerEndpoint picks the endpoint to try after a stale period: the
+// address after the current one when the name still resolves to it (fails
+// over across multi-address hosts), else the first address (the name moved).
+// Returns false when that is the endpoint already in use.
+func nextPeerEndpoint(current string, addresses []netip.Addr, port uint16) (netip.AddrPort, bool) {
+	if len(addresses) == 0 {
+		return netip.AddrPort{}, false
+	}
+	candidate := netip.AddrPortFrom(addresses[0].Unmap(), port)
+	for index, address := range addresses {
+		if netip.AddrPortFrom(address.Unmap(), port).String() == current {
+			candidate = netip.AddrPortFrom(addresses[(index+1)%len(addresses)].Unmap(), port)
+			break
+		}
+	}
+	return candidate, candidate.String() != current
+}
+
+func (session *tunnelSession) monitorEndpoint(ctx context.Context) {
+	defer close(session.monitorDone)
+	ticker := time.NewTicker(reresolveCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			session.reresolveIfStale(ctx, now)
+		}
+	}
+}
+
+// reresolveIfStale re-resolves the peer host name once its handshake is
+// stale and points the peer at the next address. wireguard-go keeps
+// retrying handshakes itself; it only needs to be told a new address.
+func (session *tunnelSession) reresolveIfStale(ctx context.Context, now time.Time) {
+	sample, err := session.telemetry()
+	if err != nil || !endpointStale(now, session.started, sample.lastHandshakeUnixMs) {
+		return
+	}
+	lookup, cancel := context.WithTimeout(ctx, reresolveLookupTimeout)
+	addresses, err := session.resolve(lookup, session.peerHost)
+	cancel()
+	if err != nil {
+		return // Keep the current endpoint; try again next interval.
+	}
+	endpoint, changed := nextPeerEndpoint(sample.endpoint, addresses, session.peerPort)
+	if !changed {
+		return
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return
+	}
+	if err := session.device.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n",
+		session.peerPublicHex, endpoint.String())); err != nil {
+		return // Keep the current endpoint; try again next interval.
+	}
 }
 
 var (
@@ -46,6 +135,13 @@ var (
 )
 
 func (session *tunnelSession) close() {
+	// Stop the monitor first and outside mu: it takes mu itself, and a
+	// pending lookup is cancelled rather than awaited.
+	if session.monitorCancel != nil {
+		session.monitorCancel()
+		<-session.monitorDone
+		session.monitorCancel = nil
+	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if session.closed {
@@ -290,7 +386,40 @@ func startSession(config tunnelConfig) (*tunnelSession, string, string, uint16, 
 	proxy := newProxyServer(listener, username, password, tnet.DialContext)
 	proxy.start()
 	session := &tunnelSession{device: dev, network: tnet, proxy: proxy, started: time.Now()}
+	if err := session.startEndpointMonitor(config); err != nil {
+		session.close()
+		return nil, "", "", 0, err
+	}
 	return session, username, password, uint16(listener.Addr().(*net.TCPAddr).Port), nil
+}
+
+func (session *tunnelSession) startEndpointMonitor(config tunnelConfig) error {
+	host, port, err := net.SplitHostPort(config.endpoint)
+	if err != nil {
+		return errors.New("invalid WireGuard peer endpoint")
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return nil // Numeric endpoint: nothing to re-resolve.
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return errors.New("invalid WireGuard peer UDP port")
+	}
+	public, err := decodeKey(config.publicKey)
+	if err != nil {
+		return err
+	}
+	session.peerHost = host
+	session.peerPort = uint16(portNumber)
+	session.peerPublicHex = public
+	session.resolve = func(ctx context.Context, name string) ([]netip.Addr, error) {
+		return net.DefaultResolver.LookupNetIP(ctx, "ip", name)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	session.monitorCancel = cancel
+	session.monitorDone = make(chan struct{})
+	go session.monitorEndpoint(ctx)
+	return nil
 }
 
 func randomToken() (string, error) {

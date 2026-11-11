@@ -106,7 +106,7 @@ if(BUILD_TESTING)
     add_test(NAME aowis-network-wireguard-conf COMMAND aowis-network-conf-tests)
     if(AOWIS_NETWORK_WITH_WIREGUARD)
         add_test(NAME aowis-network-go-tests
-            COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^(TestSOCKS5|TestTelemetry|TestReresolve)" ./...)
+            COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^(TestSOCKS5|TestTelemetry|TestReresolve|TestValidateConfig)" ./...)
         set_tests_properties(aowis-network-go-tests PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
         add_test(NAME aowis-network-wireguard-e2e

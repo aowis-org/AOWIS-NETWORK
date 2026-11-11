@@ -24,7 +24,9 @@ func TestValidateConfig(t *testing.T) {
 	config := tunnelConfig{
 		address: "10.30.0.2/32", privateKey: base64.StdEncoding.EncodeToString(private),
 		publicKey: base64.StdEncoding.EncodeToString(public),
-		endpoint:  "vpn.example.com:51820", allowedIPs: "10.30.0.0/24,10.31.0.0/24",
+		// Numeric (TEST-NET-1): validation must not depend on host DNS.
+		// Host-name endpoints are resolved at start; see resolvePeerEndpoint.
+		endpoint: "192.0.2.10:51820", allowedIPs: "10.30.0.0/24,10.31.0.0/24",
 		mtu: 1420, keepalive: 25,
 	}
 	addresses, _, ipc, err := validateConfig(config)
@@ -36,6 +38,9 @@ func TestValidateConfig(t *testing.T) {
 	}
 	if !strings.Contains(ipc, "allowed_ip=10.31.0.0/24\n") {
 		t.Fatal("missing peer route")
+	}
+	if !strings.Contains(ipc, "endpoint=192.0.2.10:51820\n") {
+		t.Fatal("missing peer endpoint")
 	}
 	config.privateKey = "not-a-key"
 	if _, _, _, err = validateConfig(config); err == nil {

@@ -46,7 +46,9 @@
 
 ## Next work (ordered)
 
-1. **Qt adapter qualification:** run the new
+1. **Qt adapter qualification** (run `./tools/qualify_wireguard.sh [runs]`:
+   full suite, Go race detector, repeated Go and Qt e2e runs, timing spread;
+   upload the resulting `qualification/<timestamp>.tar.gz`): run the new
    `aowis-network-qt-wireguard-e2e` test (all layers in one flow) on Linux,
    repeat it for cold-start/restart consistency, then qualify HTTPS, remote
    DNS, cancellation, pooling and reconnect behavior. The prior Qt adapter

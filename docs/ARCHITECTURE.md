@@ -132,15 +132,3 @@ Do not embed application protocols (DVMDB working-copy semantics, map tile
 lookup, renderer image processing, server database models) into this library.
 Keep server-specific policies in the callers and transport-neutral
 communication/credentials in AOWIS-NETWORK.
-
-## Embedded WireGuard peer diagnostics
-
-`WireGuardClient::peerStats()` reads the live `wireguard-go` device using the
-`AowisWGReadPeerStats` C ABI. The Go bridge selects only received/transmitted
-byte counters, the last handshake timestamp (Unix seconds), and the peer UDP
-endpoint. Raw IPC results **must never leave Go** because they contain keys.
-
-A timestamp of zero means no handshake yet. The counters are cumulative per
-tunnel instance, reset on restart, and do not represent throughput until a
-consumer samples them over time. A handshake is not proof of present
-reachability. The C ABI rejects invalid handles without exposing secrets.

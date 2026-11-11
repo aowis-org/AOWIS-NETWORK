@@ -326,11 +326,6 @@ func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	if !hasHandshake(t, server.device) || !hasHandshake(t, session.device) {
 		t.Fatal("HTTP succeeded but WireGuard handshake was not recorded on both peers")
 	}
-	stats, err := readSessionStats(session)
-	if err != nil || stats.handshakeSeconds == 0 || stats.receivedBytes == 0 ||
-		stats.transmittedBytes == 0 || stats.endpoint == "" {
-		t.Fatalf("encrypted HTTP did not produce live peer statistics: %+v, %v", stats, err)
-	}
 	phaseStarted = time.Now()
 	session.close()
 	logE2EPhase(t, "initial client shutdown", phaseStarted)

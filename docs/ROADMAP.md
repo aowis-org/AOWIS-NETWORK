@@ -58,9 +58,9 @@
 3. **GUI integration:** add per-server transport selection, wire the DVMDB and
    MAP clients, background health and checkout flows into the correct adapter,
    and enforce fail-closed transport selection.
-4. **Security/lifecycle:** handshake status, retries/reconnect, timed
-   shutdown, logging hygiene and proxy lifetime ownership; implement
-   meaningful peer-health signals. (Key storage belongs to AOWIS-CONFIG;
+4. **Security/lifecycle:** retries/reconnect, timed shutdown, logging
+   hygiene and proxy lifetime ownership. Handshake/traffic telemetry is
+   implemented (`WireGuardClient::telemetry()`). (Key storage belongs to AOWIS-CONFIG;
    `.conf` parsing is implemented, see below.)
 5. **Platforms:** qualify Windows and Android CGO and Qt builds, lifecycle and
    packaging, then reuse the library in Mobile.

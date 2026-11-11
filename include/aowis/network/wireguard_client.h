@@ -29,6 +29,21 @@ struct Socks5Proxy {
     std::string password;
 };
 
+// Redacted runtime state of one running tunnel, sampled on demand from the
+// embedded engine. Contains no keys or configuration text. Timestamps are
+// Unix epoch milliseconds (wall clock).
+struct WireGuardTelemetry {
+    std::int64_t startedUnixMs = 0;               // Local engine start
+    std::int64_t lastHandshakeUnixMs = 0;         // 0: no handshake completed yet
+    std::uint64_t receivedBytes = 0;              // Encrypted UDP payload from peer
+    std::uint64_t sentBytes = 0;                  // Encrypted UDP payload to peer
+    std::uint64_t persistentKeepaliveSeconds = 0; // 0: disabled
+    std::uint64_t activeProxyConnections = 0;     // Relays currently open
+    std::uint64_t acceptedProxyConnections = 0;   // Authenticated CONNECT requests
+    std::uint64_t failedProxyDials = 0;           // In-tunnel dials that failed
+    std::string peerEndpoint;                     // Resolved numeric host:port
+};
+
 class WireGuardClient final {
 public:
     WireGuardClient() = default;
@@ -45,6 +60,11 @@ public:
     void stop();
     bool isRunning() const;
     Socks5Proxy proxy() const;
+    // Samples the running engine. Returns false (and leaves *out untouched)
+    // when the tunnel is not running or the engine cannot report. Cheap
+    // enough for once-per-second polling; safe concurrently with proxied
+    // traffic, but not with start()/stop() on the same instance.
+    bool telemetry(WireGuardTelemetry* out, std::string* error = nullptr) const;
 
 private:
     std::uint64_t handle_ = 0;

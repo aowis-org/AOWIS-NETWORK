@@ -13,8 +13,8 @@ The core library has no Qt dependency; the Qt HTTP adapter is a separate
 optional target.
 
 **Current scope is a foundation, not a GUI feature.** AOWIS GUI and Mobile are
-not integrated yet; the tunnel has no UI, handshake-health reporting, or
-automatic reconnect policy. Profiles are stored by AOWIS-CONFIG; this library
+not integrated yet; the tunnel has no automatic reconnect policy. Handshake
+and traffic telemetry is available via `WireGuardClient::telemetry()`. Profiles are stored by AOWIS-CONFIG; this library
 provides the single `.conf` parser (`parseWireGuardConf()`). SOCKS5 supports
 TCP CONNECT only. Browser/WebAssembly builds are not supported by this engine.
 

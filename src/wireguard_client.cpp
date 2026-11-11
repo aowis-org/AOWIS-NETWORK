@@ -138,4 +138,55 @@ Socks5Proxy WireGuardClient::proxy() const
     return this->proxy_;
 }
 
+bool WireGuardClient::telemetry(WireGuardTelemetry* out, std::string* error) const
+{
+    if (out == nullptr || !this->isRunning()) {
+        if (error != nullptr) {
+            *error = out == nullptr ? "Missing WireGuard telemetry output" : "WireGuard tunnel is not running";
+        }
+        return false;
+    }
+#ifndef AOWIS_NETWORK_WITH_WIREGUARD
+    if (error != nullptr) {
+        *error = "AOWIS-Network was built without the embedded WireGuard engine";
+    }
+    return false;
+#else
+    std::int64_t started = 0;
+    std::int64_t handshake = 0;
+    std::uint64_t received = 0;
+    std::uint64_t sent = 0;
+    std::uint64_t keepalive = 0;
+    std::uint64_t active = 0;
+    std::uint64_t accepted = 0;
+    std::uint64_t failed = 0;
+    // Bracketed IPv6 with port fits easily: "[" + 45 + "]:" + 5 + NUL.
+    std::array<char, 128> endpoint{};
+    std::array<char, 256> bridgeError{};
+    const int ok = AowisWGTelemetry(this->handle_, &started, &handshake, &received, &sent,
+        &keepalive, &active, &accepted, &failed, endpoint.data(),
+        static_cast<int>(endpoint.size()), bridgeError.data(),
+        static_cast<int>(bridgeError.size()));
+    if (ok != 1) {
+        if (error != nullptr) {
+            *error = bridgeError.data();
+        }
+        return false;
+    }
+    out->startedUnixMs = started;
+    out->lastHandshakeUnixMs = handshake;
+    out->receivedBytes = received;
+    out->sentBytes = sent;
+    out->persistentKeepaliveSeconds = keepalive;
+    out->activeProxyConnections = active;
+    out->acceptedProxyConnections = accepted;
+    out->failedProxyDials = failed;
+    out->peerEndpoint = endpoint.data();
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+#endif
+}
+
 } // namespace aowis::network

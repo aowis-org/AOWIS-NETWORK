@@ -63,8 +63,11 @@ again right before `start()`.
 - Only authenticated SOCKS5 TCP CONNECT is accepted. SOCKS5 UDP is not
   implemented; an attacker cannot use unauthenticated `NO AUTH` negotiation.
 - The local listener binds only to IPv4 loopback; it does not bind a LAN port.
-- A successful local proxy start is **not** handshake health. Do not display
-  `connected` in the GUI until actual peer/session health is implemented.
+- A successful local proxy start is **not** handshake health. Peer health is
+  reported by `WireGuardClient::telemetry()` (last handshake, encrypted
+  rx/tx bytes, keepalive, resolved endpoint, SOCKS5 relay counters), sampled
+  on demand from wireguard-go's UAPI `get` (`AowisWGTelemetry`). Telemetry is
+  redacted: keys and configuration text never cross the ABI.
 - Private keys are passed in memory but secure persistent storage and
   zeroization of every runtime copy are **not** implemented yet.
 - This tunnel does not replace DVMDB authentication, repository identity

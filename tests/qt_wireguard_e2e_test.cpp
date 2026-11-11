@@ -135,7 +135,22 @@ void testFullStack(const QString& testPeerExecutable)
         require(forbidden.error == QNetworkReply::ContentAccessDenied,
                 "Qt service-origin guard permitted a loopback proxy bypass");
     }
+    // Telemetry crosses the same C++/Go ABI and must describe this session.
+    {
+        aowis::network::WireGuardTelemetry sample;
+        std::string telemetryError;
+        require(tunnel.telemetry(&sample, &telemetryError), "Running tunnel did not report telemetry");
+        require(sample.lastHandshakeUnixMs > 0 && sample.receivedBytes > 0 && sample.sentBytes > 0
+                // GET and POST may share one keep-alive CONNECT.
+                && sample.acceptedProxyConnections >= 1 && sample.failedProxyDials == 0
+                && !sample.peerEndpoint.empty() && sample.startedUnixMs > 0,
+                "WireGuard telemetry does not reflect the completed requests");
+    }
     tunnel.stop();
+    {
+        aowis::network::WireGuardTelemetry stoppedSample;
+        require(!tunnel.telemetry(&stoppedSample), "Stopped tunnel still reports telemetry");
+    }
     require(!tunnel.isRunning(), "Stopped WireGuard tunnel still reports running");
 
     // A stale proxy configuration must fail, not become a direct host route.

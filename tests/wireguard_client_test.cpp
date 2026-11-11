@@ -29,6 +29,12 @@ int main()
     assert(!client.start(invalid, &error));
     assert(!client.isRunning());
     assert(client.proxy().port == 0);
+    aowis::network::WireGuardTelemetry sample;
+    sample.receivedBytes = 7;
+    assert(!client.telemetry(&sample, &error));
+    assert(!error.empty());
+    assert(sample.receivedBytes == 7); // Untouched on failure
+    assert(!client.telemetry(nullptr));
     client.stop();
     client.stop();
     return 0;

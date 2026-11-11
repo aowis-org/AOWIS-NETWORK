@@ -32,6 +32,11 @@ type tunnelSession struct {
 	device  *device.Device
 	network *netstack.Net
 	proxy   *proxyServer
+	started time.Time
+	// mu serializes telemetry sampling against close(): IpcGet() is never
+	// called on a device that is being or has been closed.
+	mu     sync.Mutex
+	closed bool
 }
 
 var (
@@ -41,8 +46,90 @@ var (
 )
 
 func (session *tunnelSession) close() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return
+	}
+	session.closed = true
 	session.proxy.close()
 	session.device.Close()
+}
+
+// tunnelTelemetry is redacted runtime state: counters, timestamps and the
+// resolved numeric peer endpoint. It never carries keys or configuration.
+type tunnelTelemetry struct {
+	startedUnixMs            int64
+	lastHandshakeUnixMs      int64 // 0: no handshake has completed yet
+	rxBytes                  uint64
+	txBytes                  uint64
+	persistentKeepalive      uint64
+	endpoint                 string
+	activeProxyConnections   uint64
+	acceptedProxyConnections uint64
+	failedProxyDials         uint64
+}
+
+// parsePeerTelemetry reads the documented wireguard-go UAPI "get" fields of
+// the single configured peer. Unknown keys (allowed_ip, protocol_version,
+// public_key, ...) are ignored; private_key and preshared_key are never kept.
+func parsePeerTelemetry(status string, out *tunnelTelemetry) error {
+	var handshakeSeconds, handshakeNanoseconds int64
+	peers := 0
+	for _, line := range strings.Split(status, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		var err error
+		switch key {
+		case "public_key":
+			peers++
+		case "endpoint":
+			out.endpoint = value
+		case "last_handshake_time_sec":
+			handshakeSeconds, err = strconv.ParseInt(value, 10, 64)
+		case "last_handshake_time_nsec":
+			handshakeNanoseconds, err = strconv.ParseInt(value, 10, 64)
+		case "rx_bytes":
+			out.rxBytes, err = strconv.ParseUint(value, 10, 64)
+		case "tx_bytes":
+			out.txBytes, err = strconv.ParseUint(value, 10, 64)
+		case "persistent_keepalive_interval":
+			out.persistentKeepalive, err = strconv.ParseUint(value, 10, 64)
+		}
+		if err != nil {
+			return fmt.Errorf("invalid WireGuard status field %s", key)
+		}
+	}
+	if peers != 1 {
+		return errors.New("WireGuard status does not describe exactly one peer")
+	}
+	// wireguard-go reports 0/0 until the first handshake completes.
+	if handshakeSeconds > 0 || handshakeNanoseconds > 0 {
+		out.lastHandshakeUnixMs = handshakeSeconds*1000 + handshakeNanoseconds/1000000
+	}
+	return nil
+}
+
+func (session *tunnelSession) telemetry() (tunnelTelemetry, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return tunnelTelemetry{}, errors.New("WireGuard tunnel is stopped")
+	}
+	status, err := session.device.IpcGet()
+	if err != nil {
+		return tunnelTelemetry{}, fmt.Errorf("WireGuard status: %w", err)
+	}
+	result := tunnelTelemetry{startedUnixMs: session.started.UnixMilli()}
+	if err := parsePeerTelemetry(status, &result); err != nil {
+		return tunnelTelemetry{}, err
+	}
+	result.activeProxyConnections = session.proxy.active.Load()
+	result.acceptedProxyConnections = session.proxy.accepted.Load()
+	result.failedProxyDials = session.proxy.failedDials.Load()
+	return result, nil
 }
 
 type tunnelConfig struct {
@@ -202,7 +289,7 @@ func startSession(config tunnelConfig) (*tunnelSession, string, string, uint16, 
 	}
 	proxy := newProxyServer(listener, username, password, tnet.DialContext)
 	proxy.start()
-	session := &tunnelSession{device: dev, network: tnet, proxy: proxy}
+	session := &tunnelSession{device: dev, network: tnet, proxy: proxy, started: time.Now()}
 	return session, username, password, uint16(listener.Addr().(*net.TCPAddr).Port), nil
 }
 
@@ -269,6 +356,45 @@ func AowisWGStop(handle C.uint64_t) {
 	if session != nil {
 		session.close()
 	}
+}
+
+//export AowisWGTelemetry
+func AowisWGTelemetry(handle C.uint64_t, startedUnixMs, lastHandshakeUnixMs *C.int64_t,
+	rxBytes, txBytes, persistentKeepalive, activeProxy, acceptedProxy, failedDials *C.uint64_t,
+	endpoint *C.char, endpointCapacity C.int, errorOut *C.char, errorCapacity C.int) C.int {
+	if startedUnixMs == nil || lastHandshakeUnixMs == nil || rxBytes == nil || txBytes == nil ||
+		persistentKeepalive == nil || activeProxy == nil || acceptedProxy == nil ||
+		failedDials == nil || endpoint == nil || endpointCapacity < 2 ||
+		errorOut == nil || errorCapacity < 2 {
+		writeCString(errorOut, errorCapacity, "invalid WireGuard ABI arguments")
+		return 0
+	}
+	sessionMu.Lock()
+	session := sessions[uint64(handle)]
+	sessionMu.Unlock()
+	if session == nil {
+		writeCString(errorOut, errorCapacity, "unknown WireGuard tunnel")
+		return 0
+	}
+	sample, err := session.telemetry()
+	if err != nil {
+		writeCString(errorOut, errorCapacity, err.Error())
+		return 0
+	}
+	if !writeCString(endpoint, endpointCapacity, sample.endpoint) {
+		writeCString(errorOut, errorCapacity, "endpoint buffer too small")
+		return 0
+	}
+	*startedUnixMs = C.int64_t(sample.startedUnixMs)
+	*lastHandshakeUnixMs = C.int64_t(sample.lastHandshakeUnixMs)
+	*rxBytes = C.uint64_t(sample.rxBytes)
+	*txBytes = C.uint64_t(sample.txBytes)
+	*persistentKeepalive = C.uint64_t(sample.persistentKeepalive)
+	*activeProxy = C.uint64_t(sample.activeProxyConnections)
+	*acceptedProxy = C.uint64_t(sample.acceptedProxyConnections)
+	*failedDials = C.uint64_t(sample.failedProxyDials)
+	writeCString(errorOut, errorCapacity, "")
+	return 1
 }
 
 func main() {}

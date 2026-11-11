@@ -25,6 +25,20 @@ uint64_t AowisWGStart(const char* address,
                       char* error,
                       int error_capacity);
 void AowisWGStop(uint64_t handle);
+// Returns 1 and fills every output on success; 0 with error text otherwise.
+int AowisWGTelemetry(uint64_t handle,
+                     int64_t* started_unix_ms,
+                     int64_t* last_handshake_unix_ms,
+                     uint64_t* rx_bytes,
+                     uint64_t* tx_bytes,
+                     uint64_t* persistent_keepalive_seconds,
+                     uint64_t* active_proxy_connections,
+                     uint64_t* accepted_proxy_connections,
+                     uint64_t* failed_proxy_dials,
+                     char* endpoint,
+                     int endpoint_capacity,
+                     char* error,
+                     int error_capacity);
 
 #ifdef __cplusplus
 }

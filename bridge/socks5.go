@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,10 @@ type proxyServer struct {
 	wg       sync.WaitGroup
 	mu       sync.Mutex
 	clients  map[net.Conn]net.Conn
+	// Telemetry only; never gate behaviour on these counters.
+	accepted    atomic.Uint64 // authenticated CONNECT requests
+	active      atomic.Uint64 // relays currently copying through the tunnel
+	failedDials atomic.Uint64 // in-tunnel dials that failed (peer/service unreachable)
 }
 
 func newProxyServer(listener net.Listener, username, password string, dial dialFunction) *proxyServer {
@@ -190,14 +195,19 @@ func (proxy *proxyServer) handle(client net.Conn) {
 		client.Write([]byte{5, 7, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
+	proxy.accepted.Add(1)
 	ctx, cancel := context.WithTimeout(proxy.ctx, 15*time.Second)
 	defer cancel()
 	remote, err := proxy.dial(ctx, "tcp", target)
 	if err != nil {
+		proxy.failedDials.Add(1)
 		client.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
 	defer remote.Close()
+	proxy.active.Add(1)
+	// Adding ^uint64(0) is the documented atomic decrement.
+	defer proxy.active.Add(^uint64(0))
 	proxy.mu.Lock()
 	if proxy.ctx.Err() != nil {
 		proxy.mu.Unlock()

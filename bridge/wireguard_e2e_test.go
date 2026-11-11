@@ -326,10 +326,24 @@ func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	if !hasHandshake(t, server.device) || !hasHandshake(t, session.device) {
 		t.Fatal("HTTP succeeded but WireGuard handshake was not recorded on both peers")
 	}
+	// The exported telemetry must reflect the same session state.
+	sample, err := session.telemetry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.lastHandshakeUnixMs == 0 || sample.rxBytes == 0 || sample.txBytes == 0 ||
+		sample.acceptedProxyConnections == 0 || sample.failedProxyDials != 0 ||
+		sample.endpoint == "" || sample.startedUnixMs == 0 {
+		t.Fatalf("telemetry does not reflect the completed request: %+v", sample)
+	}
 	phaseStarted = time.Now()
+	stoppedSession := session
 	session.close()
 	logE2EPhase(t, "initial client shutdown", phaseStarted)
 	session = nil
+	if _, err := stoppedSession.telemetry(); err == nil {
+		t.Fatal("telemetry sampled a closed WireGuard device")
+	}
 	if conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))), 150*time.Millisecond); err == nil {
 		conn.Close()
 		t.Fatal("proxy listener remains open after session shutdown")

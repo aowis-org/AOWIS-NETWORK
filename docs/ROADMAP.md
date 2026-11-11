@@ -55,9 +55,10 @@
 2. **Additional tunnel qualification:** dropped UDP packets, DNS routing,
    repeated teardown and C++/Go ABI integration checks; don't change
    upstream WireGuard handshake timers or mask rapid-restart retransmissions.
-3. **GUI integration:** add per-server transport selection, wire the DVMDB and
-   MAP clients, background health and checkout flows into the correct adapter,
-   and enforce fail-closed transport selection.
+3. **GUI integration:** implemented: per-connection transport selection for
+   DVMDB and the map server, shared tunnels per profile, fail-closed
+   selection, DVMDB and map health checks through the tunnel. Open: DVMDB
+   working-copy/network operations still use the direct connection.
 4. **Security/lifecycle:** implemented: handshake/traffic telemetry
    (`WireGuardClient::telemetry()`), peer host-name re-resolution with
    multi-address failover after 135 s without a handshake (as wireguard-tools'

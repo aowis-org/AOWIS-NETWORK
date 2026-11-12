@@ -46,17 +46,15 @@
 
 ## Next work (ordered)
 
-1. **Qt adapter qualification** (run `./tools/qualify_wireguard.sh [runs]`:
-   full suite, Go race detector, repeated Go and Qt e2e runs, timing spread;
-   upload the resulting `qualification/<timestamp>.tar.gz`): run the new
-   `aowis-network-qt-wireguard-e2e` test (all layers in one flow) on Linux,
-   repeat it for cold-start/restart consistency, then qualify HTTPS, remote
-   DNS, cancellation, pooling and reconnect behavior. The prior Qt adapter
-   CTest passed on the developer's machine; the new full-stack test still
-   requires verification on that same environment.
-2. **Additional tunnel qualification:** dropped UDP packets, DNS routing,
-   repeated teardown and C++/Go ABI integration checks; don't change
-   upstream WireGuard handshake timers or mask rapid-restart retransmissions.
+1. **Qualification:** done on Linux (`./tools/qualify_wireguard.sh [runs]`:
+   full suite, Go race detector, repeated Go and Qt e2e runs; 10/10 runs each,
+   no races). Covered: full-stack Qt flow, cold start/restart, cancellation,
+   pooling, reconnect, endpoint re-resolution and in-tunnel DNS (names resolved
+   only by the peer's DNS server, `localhost` never reaches the host, no
+   resolver without `DNS =`). HTTPS and packet loss are deliberately not
+   tested separately: TLS is opaque TCP payload to the tunnel and loss is
+   handled by WireGuard/TCP, neither involves AOWIS code.
+2. **Repeat qualification per platform** as part of item 5.
 3. **GUI integration:** implemented: per-connection transport selection for
    DVMDB and the map server, shared tunnels per profile, fail-closed
    selection, DVMDB and map health checks through the tunnel, and DVMDB

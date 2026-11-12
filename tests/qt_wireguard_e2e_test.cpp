@@ -97,6 +97,7 @@ void testFullStack(const QString& testPeerExecutable)
         "[Interface]\n"
         "PrivateKey = " + ready.value(QStringLiteral("client_private_key")).toString().toStdString() + "\n"
         "Address = 10.173.91.2/32\n"
+        "DNS = 10.173.91.1\n"
         "[Peer]\n"
         "PublicKey = " + ready.value(QStringLiteral("server_public_key")).toString().toStdString() + "\n"
         "Endpoint = " + ready.value(QStringLiteral("endpoint")).toString().toStdString() + "\n"
@@ -134,6 +135,19 @@ void testFullStack(const QString& testPeerExecutable)
             QUrl(QStringLiteral("http://127.0.0.1:18080/probe")))), 1000);
         require(forbidden.error == QNetworkReply::ContentAccessDenied,
                 "Qt service-origin guard permitted a loopback proxy bypass");
+    }
+    // Host-name service URLs, as the GUI stores them: Qt must hand the name
+    // to the SOCKS5 proxy (HostNameLookupCapability) instead of resolving it
+    // on the host; dvmdb.aowis.test exists only in the peer's in-tunnel DNS.
+    {
+        const QUrl namedOrigin(QStringLiteral("http://dvmdb.aowis.test:18080"));
+        QtSocks5HttpClient named(tunnel.proxy(), namedOrigin);
+        require(named.isConfigured(), "Qt adapter rejected a host-name service endpoint");
+        const HttpResult byName = receive(named.get(QNetworkRequest(
+            QUrl(QStringLiteral("http://dvmdb.aowis.test:18080/probe")))), 8000);
+        require(!byName.timedOut && byName.error == QNetworkReply::NoError && byName.status == 200
+                && byName.body == "aowis-qt-wireguard-e2e",
+                "Qt request by host name was not resolved through the tunnel's DNS");
     }
     // Telemetry crosses the same C++/Go ABI and must describe this session.
     {

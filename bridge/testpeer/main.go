@@ -22,15 +22,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aowis-org/AOWIS-NETWORK/bridge/internal/testdns"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 const (
-	serverIP = "10.173.91.1"
-	clientIP = "10.173.91.2"
-	httpPort = 18080
+	// Answered only by this peer's in-tunnel DNS server (UDP 53 on serverIP).
+	serviceName = "dvmdb.aowis.test"
+	serverIP    = "10.173.91.1"
+	clientIP    = "10.173.91.2"
+	httpPort    = 18080
 )
 
 type keys struct {
@@ -106,6 +109,16 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("private HTTP listener: %w", err)
 	}
+	// In-tunnel DNS for host-name service URLs; reachable only via WireGuard.
+	dnsConn, err := network.ListenUDP(&net.UDPAddr{Port: 53})
+	if err != nil {
+		return fmt.Errorf("private DNS listener: %w", err)
+	}
+	resolver, err := testdns.Serve(dnsConn, serviceName, netip.MustParseAddr(serverIP))
+	if err != nil {
+		return fmt.Errorf("private DNS service: %w", err)
+	}
+	defer resolver.Close()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/probe", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {

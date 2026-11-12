@@ -86,6 +86,7 @@ if(BUILD_TESTING)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
             DEPENDS
                 "${CMAKE_CURRENT_SOURCE_DIR}/bridge/testpeer/main.go"
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/internal/testdns/testdns.go"
                 "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.mod"
                 "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.sum"
             COMMENT "Building isolated userspace WireGuard Qt test peer"
@@ -106,7 +107,7 @@ if(BUILD_TESTING)
     add_test(NAME aowis-network-wireguard-conf COMMAND aowis-network-conf-tests)
     if(AOWIS_NETWORK_WITH_WIREGUARD)
         add_test(NAME aowis-network-go-tests
-            COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^(TestSOCKS5|TestTelemetry|TestReresolve|TestValidateConfig)" ./...)
+            COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^(TestSOCKS5|TestTelemetry|TestReresolve|TestValidateConfig|TestDNS)" ./...)
         set_tests_properties(aowis-network-go-tests PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge")
         add_test(NAME aowis-network-wireguard-e2e

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aowis-org/AOWIS-NETWORK/bridge/internal/testdns"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
@@ -31,6 +32,8 @@ const (
 	testServerIP = "10.173.91.1"
 	testClientIP = "10.173.91.2"
 	testHTTPPort = 18080
+	// Reserved TLD (RFC 6761): never resolvable outside the test tunnel.
+	testServiceName = "dvmdb.aowis.test"
 )
 
 type testPeerKeys struct {
@@ -91,6 +94,7 @@ func hasHandshake(t *testing.T, dev *device.Device) bool {
 
 type testWireGuardServer struct {
 	device     *device.Device
+	network    *netstack.Net
 	keys       testPeerKeys
 	clientKeys testPeerKeys
 	endpoint   string
@@ -131,7 +135,7 @@ func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
 		t.Fatal(err)
 	}
 	server := &testWireGuardServer{
-		device: dev, keys: serverKeys, clientKeys: clientKeys,
+		device: dev, network: network, keys: serverKeys, clientKeys: clientKeys,
 		endpoint:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
 		serveError: make(chan error, 1),
 	}
@@ -170,8 +174,14 @@ func mustDecodeTestKey(t *testing.T, key string) []byte {
 
 func (server *testWireGuardServer) startClient(t *testing.T, peerPublicKey string) (*tunnelSession, uint16, string, string) {
 	t.Helper()
+	return server.startClientWithDNS(t, peerPublicKey, "")
+}
+
+// dns: the client profile's "DNS =" (comma-separated); empty: none.
+func (server *testWireGuardServer) startClientWithDNS(t *testing.T, peerPublicKey, dns string) (*tunnelSession, uint16, string, string) {
+	t.Helper()
 	session, username, password, port, err := startSession(tunnelConfig{
-		address: testClientIP + "/32", privateKey: server.clientKeys.private,
+		address: testClientIP + "/32", dns: dns, privateKey: server.clientKeys.private,
 		publicKey: peerPublicKey, endpoint: server.endpoint,
 		allowedIPs: testServerIP + "/32", mtu: 1420,
 	})
@@ -472,5 +482,86 @@ func TestWireGuardE2ENoDirectHostFallback(t *testing.T) {
 	case <-reached:
 		t.Fatal("OS-only HTTP server received traffic that should have stayed in netstack")
 	default:
+	}
+}
+
+// Host names in service URLs are resolved only by the profile's DNS server,
+// through the tunnel: the SOCKS5 proxy receives the name unresolved and the
+// userspace netstack queries the in-tunnel DNS. The host resolver is never
+// used, so a name only the host knows must fail rather than leak.
+func TestWireGuardE2EInTunnelDNS(t *testing.T) {
+	server := newTestWireGuardServer(t, "dns")
+	udp, err := server.network.ListenUDP(&net.UDPAddr{Port: 53})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := testdns.Serve(udp, testServiceName, netip.MustParseAddr(testServerIP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resolver.Close() })
+
+	// A host-side HTTP listener that must never be reached through the
+	// tunnel: "localhost" resolves to it on the host, and only there.
+	hostListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostHits atomic.Int64
+	hostServer := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		hostHits.Add(1)
+		_, _ = io.WriteString(writer, "host-resolver-leak")
+	}), ReadHeaderTimeout: 2 * time.Second}
+	go func() { _ = hostServer.Serve(hostListener) }()
+	t.Cleanup(func() { _ = hostServer.Close() })
+	_, hostPort, _ := net.SplitHostPort(hostListener.Addr().String())
+
+	session, port, user, pass := server.startClientWithDNS(t, server.keys.public, testServerIP)
+	client := newSOCKSHTTPClient(port, user, pass, 12*time.Second)
+
+	// 1. The service name resolves through the tunnel (Go's SOCKS5 client
+	//    sends names unresolved, as Qt does with HostNameLookupCapability).
+	response, err := client.Get(fmt.Sprintf("http://%s:%d/probe", testServiceName, testHTTPPort))
+	if err != nil {
+		t.Fatalf("request by in-tunnel name: %v (DNS queries %d)\nclient WireGuard: %s",
+			err, resolver.Queries(), peerDiagnostics(session.device))
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(body) != "aowis-wireguard-e2e:dns" || resolver.Queries() == 0 {
+		t.Fatalf("name not resolved through the tunnel: status=%d body=%q queries=%d",
+			response.StatusCode, body, resolver.Queries())
+	}
+
+	// 2. A name only the host can resolve must not reach the host.
+	if response, err := client.Get("http://localhost:" + hostPort + "/probe"); err == nil {
+		leaked, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("host-only name was served: status=%d body=%q", response.StatusCode, leaked)
+	}
+	if hostHits.Load() != 0 {
+		t.Fatal("a tunnel request reached the host resolver's address")
+	}
+	client.CloseIdleConnections()
+	session.close()
+
+	// 3. Without "DNS =" names fail closed: no host resolver, no query.
+	time.Sleep(device.HandshakeInitationRate + 10*time.Millisecond)
+	queriesBefore := resolver.Queries()
+	noDNS, noDNSPort, noDNSUser, noDNSPass := server.startClientWithDNS(t, server.keys.public, "")
+	defer noDNS.close()
+	noDNSClient := newSOCKSHTTPClient(noDNSPort, noDNSUser, noDNSPass, 12*time.Second)
+	defer noDNSClient.CloseIdleConnections()
+	if response, err := noDNSClient.Get(fmt.Sprintf("http://%s:%d/probe", testServiceName, testHTTPPort)); err == nil {
+		response.Body.Close()
+		t.Fatal("service name resolved without a tunnel DNS server")
+	}
+	sample, err := noDNS.telemetry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver.Queries() != queriesBefore || sample.failedProxyDials == 0 || hostHits.Load() != 0 {
+		t.Fatalf("no-DNS request: queries %d -> %d, failed dials %d, host hits %d",
+			queriesBefore, resolver.Queries(), sample.failedProxyDials, hostHits.Load())
 	}
 }

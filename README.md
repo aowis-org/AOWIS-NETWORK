@@ -73,6 +73,19 @@ cmake --build build-cpp-only
 ctest --test-dir build-cpp-only --output-on-failure
 ```
 
+## Prebuilt engine for cross builds (Windows)
+
+Toolchains that cannot run Go during the CMake build link a prebuilt engine
+instead. Standalone's Windows build (MinGW/CMake/Ninja under Wine) does:
+
+```bash
+GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc-posix \
+    tools/build_wireguard_engine.sh build-windows/aowis-wireguard
+cmake ... -DAOWIS_NETWORK_WIREGUARD_ARCHIVE=build-windows/aowis-wireguard/libaowis_wireguard.a
+```
+
+With a prebuilt archive the Go-based tests are not registered.
+
 ## Optional Qt HTTP transport (Stage 3)
 
 Qt 6 Network is detected automatically by CMake. When present the additional

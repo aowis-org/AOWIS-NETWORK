@@ -11,31 +11,54 @@ target_include_directories(aowis-network PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
+# Toolchains that cannot run the Go build themselves (the Windows build runs
+# MinGW, CMake and Ninja under Wine) link an engine archive prebuilt with
+# tools/build_wireguard_engine.sh instead. Empty: build it here with Go.
+set(AOWIS_NETWORK_WIREGUARD_ARCHIVE "" CACHE FILEPATH
+    "Prebuilt WireGuard engine C archive; empty builds it with Go")
 if(AOWIS_NETWORK_WITH_WIREGUARD)
-    find_program(AOWIS_GO_EXECUTABLE NAMES go REQUIRED)
     find_package(Threads REQUIRED)
-    set(AOWIS_GO_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/go/libaowis_wireguard.a")
-    set(AOWIS_GO_HEADER "${CMAKE_CURRENT_BINARY_DIR}/go/libaowis_wireguard.h")
-    add_custom_command(
-        OUTPUT "${AOWIS_GO_ARCHIVE}" "${AOWIS_GO_HEADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/go"
-        COMMAND "${CMAKE_COMMAND}" -E env CGO_ENABLED=1 GOWORK=off
-            "${AOWIS_GO_EXECUTABLE}" build -mod=readonly -buildmode=c-archive
-            -o "${AOWIS_GO_ARCHIVE}" .
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
-        DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/bridge/main.go"
-            "${CMAKE_CURRENT_SOURCE_DIR}/bridge/socks5.go"
-            "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.mod"
-            "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.sum"
-        COMMENT "Building embedded userspace WireGuard engine"
-        VERBATIM)
-    add_custom_target(aowis-wireguard-bridge DEPENDS "${AOWIS_GO_ARCHIVE}" "${AOWIS_GO_HEADER}")
     add_library(aowis-wireguard-go STATIC IMPORTED GLOBAL)
-    set_target_properties(aowis-wireguard-go PROPERTIES IMPORTED_LOCATION "${AOWIS_GO_ARCHIVE}")
-    add_dependencies(aowis-wireguard-go aowis-wireguard-bridge)
+    if(AOWIS_NETWORK_WIREGUARD_ARCHIVE)
+        if(NOT EXISTS "${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
+            message(FATAL_ERROR "AOWIS_NETWORK_WIREGUARD_ARCHIVE does not exist: ${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
+        endif()
+        set_target_properties(aowis-wireguard-go PROPERTIES
+            IMPORTED_LOCATION "${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
+        message(STATUS "AOWIS-Network: prebuilt WireGuard engine ${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
+    else()
+        find_program(AOWIS_GO_EXECUTABLE NAMES go)
+        if(NOT AOWIS_GO_EXECUTABLE)
+            message(FATAL_ERROR "Go is required to build the WireGuard engine. Install Go, "
+                "or pass a prebuilt archive as AOWIS_NETWORK_WIREGUARD_ARCHIVE "
+                "(tools/build_wireguard_engine.sh), or disable AOWIS_NETWORK_WITH_WIREGUARD.")
+        endif()
+        set(AOWIS_GO_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/go/libaowis_wireguard.a")
+        set(AOWIS_GO_HEADER "${CMAKE_CURRENT_BINARY_DIR}/go/libaowis_wireguard.h")
+        add_custom_command(
+            OUTPUT "${AOWIS_GO_ARCHIVE}" "${AOWIS_GO_HEADER}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/go"
+            COMMAND "${CMAKE_COMMAND}" -E env CGO_ENABLED=1 GOWORK=off
+                "${AOWIS_GO_EXECUTABLE}" build -mod=readonly -buildmode=c-archive
+                -o "${AOWIS_GO_ARCHIVE}" .
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bridge"
+            DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/main.go"
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/socks5.go"
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.mod"
+                "${CMAKE_CURRENT_SOURCE_DIR}/bridge/go.sum"
+            COMMENT "Building embedded userspace WireGuard engine"
+            VERBATIM)
+        add_custom_target(aowis-wireguard-bridge DEPENDS "${AOWIS_GO_ARCHIVE}" "${AOWIS_GO_HEADER}")
+        set_target_properties(aowis-wireguard-go PROPERTIES IMPORTED_LOCATION "${AOWIS_GO_ARCHIVE}")
+        add_dependencies(aowis-wireguard-go aowis-wireguard-bridge)
+    endif()
     target_compile_definitions(aowis-network PRIVATE AOWIS_NETWORK_WITH_WIREGUARD=1)
     target_link_libraries(aowis-network PRIVATE aowis-wireguard-go Threads::Threads ${CMAKE_DL_LIBS})
+    if(WIN32)
+        # The Go runtime imports from these system DLLs; unused ones cost nothing.
+        target_link_libraries(aowis-network PRIVATE ws2_32 winmm ntdll advapi32 bcrypt userenv)
+    endif()
 endif()
 
 # Qt remains an optional companion API. AUTO enables it when Qt6 Network
@@ -75,7 +98,7 @@ if(BUILD_TESTING)
     # Full encrypted path: Qt HTTP -> C++ tunnel -> Go C ABI -> real UDP
     # WireGuard -> remote userspace netstack HTTP. The Go peer is a CTest-only
     # executable, never linked into or installed with the production library.
-    if(AOWIS_NETWORK_WITH_WIREGUARD AND TARGET aowis-network-qt)
+    if(AOWIS_GO_EXECUTABLE AND TARGET aowis-network-qt)
         set(AOWIS_TEST_PEER_BIN "${CMAKE_CURRENT_BINARY_DIR}/go/aowis-network-test-peer")
         add_custom_command(
             OUTPUT "${AOWIS_TEST_PEER_BIN}"
@@ -105,7 +128,7 @@ if(BUILD_TESTING)
     add_executable(aowis-network-conf-tests tests/wireguard_conf_test.cpp)
     target_link_libraries(aowis-network-conf-tests PRIVATE AOWIS::Network)
     add_test(NAME aowis-network-wireguard-conf COMMAND aowis-network-conf-tests)
-    if(AOWIS_NETWORK_WITH_WIREGUARD)
+    if(AOWIS_GO_EXECUTABLE)
         add_test(NAME aowis-network-go-tests
             COMMAND "${AOWIS_GO_EXECUTABLE}" test -mod=readonly -count=1 -run "^(TestSOCKS5|TestTelemetry|TestReresolve|TestValidateConfig|TestDNS)" ./...)
         set_tests_properties(aowis-network-go-tests PROPERTIES

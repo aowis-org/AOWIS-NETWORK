@@ -66,8 +66,11 @@
    failed tunnel starts. Open: an idle shutdown policy, only worthwhile once
    consumers stop polling continuously. (Key storage belongs to AOWIS-CONFIG;
    `.conf` parsing is implemented, see below.)
-5. **Platforms:** qualify Windows and Android CGO and Qt builds, lifecycle and
-   packaging, then reuse the library in Mobile.
+5. **Platforms:** Windows: the engine is cross-built as a C archive
+   (`tools/build_wireguard_engine.sh`, Linux Go + MinGW-w64) and linked via
+   `AOWIS_NETWORK_WIREGUARD_ARCHIVE` by Standalone's Wine/MinGW build; the
+   first runtime check on Windows is open. Then Android CGO and Qt builds,
+   lifecycle and packaging, and reuse in Mobile.
 6. **Later transports:** browser/WebAssembly-compatible gateway and optional
    server-side embedded WireGuard.
 

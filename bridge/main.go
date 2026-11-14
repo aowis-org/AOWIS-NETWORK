@@ -46,25 +46,50 @@ type tunnelSession struct {
 	resolve       func(context.Context, string) ([]netip.Addr, error)
 	monitorCancel context.CancelFunc
 	monitorDone   chan struct{}
+	// Monitor goroutine only: when traffic was first seen without any
+	// handshake yet, and when the name was last re-resolved.
+	firstSend     time.Time
+	lastReresolve time.Time
 }
 
 // The 135 s threshold is wireguard-tools' reresolve-dns.sh: sessions renew
 // every 120 s (REKEY_AFTER_TIME) while packets flow, plus a retry margin,
 // so a live peer never reaches it. The name is resolved once at start.
+//
+// Before the first handshake a much shorter limit applies, counted from the
+// first packet sent: a name with several addresses (typically IPv6 and
+// IPv4) is started on the first one, and at a site without working IPv6 the
+// tunnel otherwise stayed dead for over two minutes before trying IPv4.
+// wireguard-go retransmits a handshake initiation every 5 s, so 15 s is
+// three unanswered initiations to one address.
 const (
-	reresolveStaleAfter    = 135 * time.Second
-	reresolveCheckInterval = 30 * time.Second
-	reresolveLookupTimeout = 5 * time.Second
+	reresolveStaleAfter      = 135 * time.Second
+	firstHandshakeStaleAfter = 15 * time.Second
+	reresolveCheckInterval   = 5 * time.Second
+	reresolveMinimumSpacing  = 30 * time.Second
+	reresolveLookupTimeout   = 5 * time.Second
 )
 
-// endpointStale reports whether the peer has had no handshake for
-// reresolveStaleAfter, counting from the session start until the first one.
-func endpointStale(now, started time.Time, lastHandshakeUnixMs int64) bool {
-	reference := started
+// endpointStale reports whether the peer endpoint should be re-resolved:
+// no handshake for reresolveStaleAfter after the last one, or, while there
+// has never been one, firstHandshakeStaleAfter after the first packet sent
+// (firstSend zero: nothing sent yet, nothing to judge).
+func endpointStale(now, firstSend time.Time, lastHandshakeUnixMs int64) bool {
 	if lastHandshakeUnixMs > 0 {
-		reference = time.UnixMilli(lastHandshakeUnixMs)
+		return now.Sub(time.UnixMilli(lastHandshakeUnixMs)) >= reresolveStaleAfter
 	}
-	return now.Sub(reference) >= reresolveStaleAfter
+	return !firstSend.IsZero() && now.Sub(firstSend) >= firstHandshakeStaleAfter
+}
+
+// reresolveSpacing is the minimum time between two re-resolutions: short
+// while no handshake ever succeeded (each address gets its 15 s), otherwise
+// long enough that a peer that is down for hours does not cause a DNS query
+// every check interval.
+func reresolveSpacing(lastHandshakeUnixMs int64) time.Duration {
+	if lastHandshakeUnixMs == 0 {
+		return firstHandshakeStaleAfter
+	}
+	return reresolveMinimumSpacing
 }
 
 // nextPeerEndpoint picks the endpoint to try after a stale period: the
@@ -104,9 +129,20 @@ func (session *tunnelSession) monitorEndpoint(ctx context.Context) {
 // retrying handshakes itself; it only needs to be told a new address.
 func (session *tunnelSession) reresolveIfStale(ctx context.Context, now time.Time) {
 	sample, err := session.telemetry()
-	if err != nil || !endpointStale(now, session.started, sample.lastHandshakeUnixMs) {
+	if err != nil {
 		return
 	}
+	if sample.lastHandshakeUnixMs == 0 && sample.txBytes > 0 && session.firstSend.IsZero() {
+		session.firstSend = now
+	}
+	if !endpointStale(now, session.firstSend, sample.lastHandshakeUnixMs) {
+		return
+	}
+	if !session.lastReresolve.IsZero() &&
+		now.Sub(session.lastReresolve) < reresolveSpacing(sample.lastHandshakeUnixMs) {
+		return
+	}
+	session.lastReresolve = now
 	lookup, cancel := context.WithTimeout(ctx, reresolveLookupTimeout)
 	addresses, err := session.resolve(lookup, session.peerHost)
 	cancel()
@@ -125,6 +161,10 @@ func (session *tunnelSession) reresolveIfStale(ctx context.Context, now time.Tim
 	if err := session.device.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n",
 		session.peerPublicHex, endpoint.String())); err != nil {
 		return // Keep the current endpoint; try again next interval.
+	}
+	if sample.lastHandshakeUnixMs == 0 {
+		// The new address gets its own first-handshake period.
+		session.firstSend = now
 	}
 }
 

@@ -7,19 +7,25 @@ import (
 )
 
 func TestReresolveStaleness(t *testing.T) {
-	started := time.Unix(1700000000, 0)
-	if endpointStale(started.Add(134*time.Second), started, 0) {
-		t.Fatal("stale before 135 s without a first handshake")
+	firstSend := time.Unix(1700000000, 0)
+	if endpointStale(firstSend.Add(time.Hour), time.Time{}, 0) {
+		t.Fatal("stale although nothing was ever sent")
 	}
-	if !endpointStale(started.Add(135*time.Second), started, 0) {
-		t.Fatal("not stale 135 s after start without a handshake")
+	if endpointStale(firstSend.Add(14*time.Second), firstSend, 0) {
+		t.Fatal("stale less than 15 s after the first unanswered packet")
 	}
-	handshake := started.Add(10 * time.Minute)
-	if endpointStale(handshake.Add(2*time.Minute), started, handshake.UnixMilli()) {
+	if !endpointStale(firstSend.Add(15*time.Second), firstSend, 0) {
+		t.Fatal("not stale 15 s after the first unanswered packet")
+	}
+	handshake := firstSend.Add(10 * time.Minute)
+	if endpointStale(handshake.Add(2*time.Minute), firstSend, handshake.UnixMilli()) {
 		t.Fatal("a peer renewing every 2 minutes was reported stale")
 	}
-	if !endpointStale(handshake.Add(3*time.Minute), started, handshake.UnixMilli()) {
+	if !endpointStale(handshake.Add(3*time.Minute), firstSend, handshake.UnixMilli()) {
 		t.Fatal("handshake 3 minutes old was not reported stale")
+	}
+	if reresolveSpacing(0) != 15*time.Second || reresolveSpacing(handshake.UnixMilli()) != 30*time.Second {
+		t.Fatal("unexpected re-resolution spacing")
 	}
 }
 

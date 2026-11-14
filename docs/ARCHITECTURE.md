@@ -60,8 +60,12 @@ again right before `start()`.
 - Proxied destinations use **in-tunnel** DNS when DNS servers are supplied.
 - The WireGuard public endpoint uses normal host-side DNS and UDP transport.
   A host-name endpoint is resolved at start and again after 135 s without a
-  handshake; the peer then moves to the next resolved address (or the new
-  one if the name moved). Numeric endpoints are never changed.
+  handshake, or, while no handshake has ever completed, 15 s after the first
+  unanswered packet (so a dead first address, e.g. IPv6 at a site without
+  IPv6, is left quickly); the peer then moves to the next resolved address
+  (or the new one if the name moved). Lookups are at least 15 s apart before
+  the first handshake and 30 s apart after it. Numeric endpoints are never
+  changed.
 - Allowed IPs are applied to the WireGuard peer, not as OS route changes.
 - Only authenticated SOCKS5 TCP CONNECT is accepted. SOCKS5 UDP is not
   implemented; an attacker cannot use unauthenticated `NO AUTH` negotiation.

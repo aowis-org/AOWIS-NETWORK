@@ -62,7 +62,8 @@
 4. **Security/lifecycle:** implemented: handshake/traffic telemetry
    (`WireGuardClient::telemetry()`), peer host-name re-resolution with
    multi-address failover after 135 s without a handshake (as wireguard-tools'
-   `reresolve-dns.sh`); the GUI shares one tunnel per profile and retries
+   `reresolve-dns.sh`), and after 15 s of unanswered packets before the first
+   handshake; the GUI shares one tunnel per profile and retries
    failed tunnel starts. Open: an idle shutdown policy, only worthwhile once
    consumers stop polling continuously. (Key storage belongs to AOWIS-CONFIG;
    `.conf` parsing is implemented, see below.)

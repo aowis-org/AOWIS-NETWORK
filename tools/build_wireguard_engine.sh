@@ -15,7 +15,8 @@
 # Android gets a shared library (c-shared): a Go c-archive for android uses
 # local-exec TLS and cannot be linked into the app's own shared library.
 # The .so is packaged next to the app (QT_ANDROID_EXTRA_LIBS), 16 KiB page
-# aligned as Android 15+ requires. Override with AOWIS_WIREGUARD_BUILDMODE.
+# aligned as Android 15+ requires, with SONAME libaowis_wireguard.so so the
+# app loads it by name. Override with AOWIS_WIREGUARD_BUILDMODE.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -38,8 +39,11 @@ case "$buildmode" in
     c-shared)
         [[ "$goos" != windows ]] || { printf 'c-shared is not supported for Windows here\n' >&2; exit 2; }
         library="$out/libaowis_wireguard.so"
+        # Go's linker sets no SONAME for c-shared on android: without one the
+        # app would record the build path as its dependency and fail to load.
+        ldflags=(-ldflags '-extldflags=-Wl,-soname,libaowis_wireguard.so')
         if [[ "$goos" == android ]]; then
-            ldflags=(-ldflags '-extldflags=-Wl,-z,max-page-size=16384')
+            ldflags=(-ldflags '-extldflags=-Wl,-soname,libaowis_wireguard.so,-z,max-page-size=16384')
         fi
         ;;
     *) printf 'Unsupported AOWIS_WIREGUARD_BUILDMODE: %s\n' "$buildmode" >&2; exit 2 ;;

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -141,7 +142,24 @@ func newTestWireGuardServer(t *testing.T, marker string) *testWireGuardServer {
 	}
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		server.hits.Add(1)
-		if request.URL.Path != "/probe" {
+		switch request.URL.Path {
+		case "/probe":
+		case "/bulk":
+			// Incompressible payload of the requested size (traffic counter test).
+			size, err := strconv.Atoi(request.URL.Query().Get("bytes"))
+			if err != nil || size < 0 || size > 64<<20 {
+				http.Error(writer, "invalid size", http.StatusBadRequest)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/octet-stream")
+			writer.Header().Set("Content-Length", strconv.Itoa(size))
+			_, _ = io.CopyN(writer, rand.Reader, int64(size))
+			return
+		case "/sink":
+			received, _ := io.Copy(io.Discard, request.Body)
+			_, _ = io.WriteString(writer, strconv.FormatInt(received, 10))
+			return
+		default:
 			http.NotFound(writer, request)
 			return
 		}
@@ -384,6 +402,80 @@ func TestWireGuardE2EEncryptedHTTPAndRestart(t *testing.T) {
 	}()
 	requestThroughTunnel(t, server, restarted, newPort, newUser, newPass, "first")
 	logE2EPhase(t, "test body excluding deferred shutdown", testStarted)
+}
+
+// The status page's traffic counters are wireguard-go's per-peer rx/tx
+// bytes. Move a known amount of incompressible payload each way and require
+// the counters to account for all of it, plus no more than plausible
+// WireGuard/IP/TCP framing (about 6 % at MTU 1420) and the reverse-direction
+// ACKs. Guards against a counter that under- or over-reports real traffic.
+func TestWireGuardE2ETrafficCountersMatchPayload(t *testing.T) {
+	server := newTestWireGuardServer(t, "counters")
+	session, port, user, pass := server.startClient(t, server.keys.public)
+	defer session.close()
+	// Complete the handshake first so it does not blur the measurement.
+	requestThroughTunnel(t, server, session, port, user, pass, "counters")
+	client := newSOCKSHTTPClient(port, user, pass, 60*time.Second)
+	defer client.CloseIdleConnections()
+	base := fmt.Sprintf("http://%s:%d", testServerIP, testHTTPPort)
+
+	sample := func() tunnelTelemetry {
+		t.Helper()
+		value, err := session.telemetry()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	within := func(direction string, measured, payload uint64) {
+		t.Helper()
+		ceiling := payload + payload/8 + 64<<10
+		t.Logf("%s: payload %d B, counted %d B (%.1f %% overhead)", direction, payload, measured,
+			100*(float64(measured)-float64(payload))/float64(payload))
+		if measured < payload || measured > ceiling {
+			t.Fatalf("%s counter %d B is outside [%d, %d] for %d B of payload", direction, measured, payload, ceiling, payload)
+		}
+	}
+	reverse := func(direction string, measured, payload uint64) {
+		t.Helper()
+		if measured > payload/8+64<<10 {
+			t.Fatalf("%s counter grew by %d B while only ACKs for %d B of payload flowed", direction, measured, payload)
+		}
+	}
+
+	const download = 8 << 20
+	before := sample()
+	response, err := client.Get(fmt.Sprintf("%s/bulk?bytes=%d", base, download))
+	if err != nil {
+		t.Fatalf("bulk download through tunnel: %v", err)
+	}
+	downloaded, err := io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK || downloaded != download {
+		t.Fatalf("bulk download: status %d, %d of %d B, err %v", response.StatusCode, downloaded, download, err)
+	}
+	after := sample()
+	within("received", after.rxBytes-before.rxBytes, download)
+	reverse("sent", after.txBytes-before.txBytes, download)
+
+	const upload = 4 << 20
+	payload := make([]byte, upload)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	before = sample()
+	response, err = client.Post(base+"/sink", "application/octet-stream", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("bulk upload through tunnel: %v", err)
+	}
+	echoed, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK || string(echoed) != strconv.Itoa(upload) {
+		t.Fatalf("bulk upload: status %d, server received %q of %d B, err %v", response.StatusCode, echoed, upload, err)
+	}
+	after = sample()
+	within("sent", after.txBytes-before.txBytes, upload)
+	reverse("received", after.rxBytes-before.rxBytes, upload)
 }
 
 // An abrupt restart may occur within the server peer's 20 ms handshake

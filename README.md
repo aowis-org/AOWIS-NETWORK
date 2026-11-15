@@ -73,15 +73,28 @@ cmake --build build-cpp-only
 ctest --test-dir build-cpp-only --output-on-failure
 ```
 
-## Prebuilt engine for cross builds (Windows)
+## Prebuilt engine for cross builds (Windows, Android)
 
 Toolchains that cannot run Go during the CMake build link a prebuilt engine
-instead. Standalone's Windows build (MinGW/CMake/Ninja under Wine) does:
+instead (cross builds without one stop at configure). Standalone's Windows
+build (MinGW/CMake/Ninja under Wine) does:
 
 ```bash
 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc-posix \
     tools/build_wireguard_engine.sh build-windows/aowis-wireguard
 cmake ... -DAOWIS_NETWORK_WIREGUARD_ARCHIVE=build-windows/aowis-wireguard/libaowis_wireguard.a
+```
+
+Android (AOWIS-GUI-Mobile's Docker build) gets a shared library: a Go
+c-archive for `GOOS=android` uses local-exec TLS and cannot be linked into
+the app's own shared library. The script picks `-buildmode=c-shared` and
+16 KiB page alignment for Android automatically; the app must package the
+`.so` (Qt: `QT_ANDROID_EXTRA_LIBS`).
+
+```bash
+GOOS=android GOARCH=arm64 CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang \
+    tools/build_wireguard_engine.sh build-android/aowis-wireguard
+cmake ... -DAOWIS_NETWORK_WIREGUARD_ARCHIVE=build-android/aowis-wireguard/libaowis_wireguard.so
 ```
 
 With a prebuilt archive the Go-based tests are not registered.

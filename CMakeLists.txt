@@ -12,21 +12,34 @@ target_include_directories(aowis-network PUBLIC
     $<INSTALL_INTERFACE:include>)
 
 # Toolchains that cannot run the Go build themselves (the Windows build runs
-# MinGW, CMake and Ninja under Wine) link an engine archive prebuilt with
-# tools/build_wireguard_engine.sh instead. Empty: build it here with Go.
+# MinGW, CMake and Ninja under Wine; Android cross-builds with the NDK) link
+# an engine prebuilt with tools/build_wireguard_engine.sh instead: a C archive
+# (.a), or for Android a shared library (.so) the app must package. Empty:
+# build it here with Go for the host.
 set(AOWIS_NETWORK_WIREGUARD_ARCHIVE "" CACHE FILEPATH
-    "Prebuilt WireGuard engine C archive; empty builds it with Go")
+    "Prebuilt WireGuard engine (.a, or .so for Android); empty builds it with Go")
 if(AOWIS_NETWORK_WITH_WIREGUARD)
     find_package(Threads REQUIRED)
-    add_library(aowis-wireguard-go STATIC IMPORTED GLOBAL)
     if(AOWIS_NETWORK_WIREGUARD_ARCHIVE)
         if(NOT EXISTS "${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
             message(FATAL_ERROR "AOWIS_NETWORK_WIREGUARD_ARCHIVE does not exist: ${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
+        endif()
+        if(AOWIS_NETWORK_WIREGUARD_ARCHIVE MATCHES "\\.so$")
+            add_library(aowis-wireguard-go SHARED IMPORTED GLOBAL)
+            set_target_properties(aowis-wireguard-go PROPERTIES IMPORTED_SONAME "libaowis_wireguard.so")
+        else()
+            add_library(aowis-wireguard-go STATIC IMPORTED GLOBAL)
         endif()
         set_target_properties(aowis-wireguard-go PROPERTIES
             IMPORTED_LOCATION "${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
         message(STATUS "AOWIS-Network: prebuilt WireGuard engine ${AOWIS_NETWORK_WIREGUARD_ARCHIVE}")
     else()
+        if(ANDROID OR CMAKE_CROSSCOMPILING)
+            message(FATAL_ERROR "Cross builds need a prebuilt WireGuard engine: run "
+                "tools/build_wireguard_engine.sh with the target's GOOS/GOARCH/CC and pass "
+                "the result as AOWIS_NETWORK_WIREGUARD_ARCHIVE, or disable AOWIS_NETWORK_WITH_WIREGUARD.")
+        endif()
+        add_library(aowis-wireguard-go STATIC IMPORTED GLOBAL)
         find_program(AOWIS_GO_EXECUTABLE NAMES go)
         if(NOT AOWIS_GO_EXECUTABLE)
             message(FATAL_ERROR "Go is required to build the WireGuard engine. Install Go, "
